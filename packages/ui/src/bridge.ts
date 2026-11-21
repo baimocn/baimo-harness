@@ -99,6 +99,50 @@ export interface ApprovalRequestDto {
 
 export type ApprovalChoice = "once" | "session" | "deny";
 
+/* ---------- M-03 计划面板 ---------- */
+
+export interface PlanStepDto {
+  title: string;
+  /** 动作类型（bash/write/read/…），由提交计划的 agent 给出。 */
+  action: string;
+  /** pending / done / failed（只由 plan_progress 的真实调用推进）。 */
+  status: string;
+  note?: string;
+}
+
+/** 计划状态（扩展写状态文件、主进程只读转发；无计划时为 null）。 */
+export interface PlanStateDto {
+  /** awaiting_approval / executing / paused / completed / completed_with_failures / incomplete / rejected */
+  status: string;
+  task: string;
+  steps: PlanStepDto[];
+  updatedAt: string;
+}
+
+export interface PlanViewDto {
+  plan: PlanStateDto | null;
+  /** 本会话是否开启「计划先行」（开启后写操作未过计划批准会被硬拦）。 */
+  required: boolean;
+  /** 是否处于用户暂停（tool_call 边界拦截后续步骤）。 */
+  paused: boolean;
+}
+
+/** submit_plan 的裁决请求（扩展正阻塞在 select 往返上）。 */
+export interface PlanRequestDto {
+  sessionId: string;
+  requestId: string;
+  steps: PlanStepDto[];
+}
+
+/** 「编辑计划」的 editor 请求：prefill 为原计划逐行文本。 */
+export interface PlanEditRequestDto {
+  sessionId: string;
+  requestId: string;
+  prefill: string;
+}
+
+export type PlanSelectChoice = "approve" | "edit" | "deny";
+
 export interface HostSnapshotDto {
   /** 随附 Pi 版本（读自 runtime 钉版包，读不到为「未知」）。 */
   kernelVersion: string;
@@ -192,6 +236,30 @@ export interface BaimoBridge {
     id: string,
     path: string,
   ): Promise<{ ok: boolean; action?: string; path?: string; error?: string }>;
+  /** 计划视图：状态文件内容 + 本会话的计划先行/暂停开关（主进程持有）。 */
+  getPlan(id: string): Promise<PlanViewDto>;
+  /** 计划裁决回注：翻译成计划门 select 的选项原文。 */
+  respondPlanSelect(
+    sessionId: string,
+    requestId: string,
+    choice: PlanSelectChoice,
+  ): Promise<{ ok: boolean; error?: string }>;
+  /** 计划编辑回注：text 为编辑后的全文；null 表示取消编辑（回到裁决）。 */
+  respondPlanEdit(
+    sessionId: string,
+    requestId: string,
+    text: string | null,
+  ): Promise<{ ok: boolean; error?: string }>;
+  /** 开关「计划先行」：经策略文件即时生效（扩展逐次工具调用现读）。 */
+  setPlanRequired(
+    sessionId: string,
+    required: boolean,
+  ): Promise<{ ok: boolean }>;
+  /** 暂停/恢复计划执行：经策略文件在工具调用边界生效。 */
+  setPlanPaused(sessionId: string, paused: boolean): Promise<{ ok: boolean }>;
+  onPlanRequested(cb: (e: PlanRequestDto) => void): () => void;
+  onPlanEditRequested(cb: (e: PlanEditRequestDto) => void): () => void;
+  onPlanChanged(cb: (e: { sessionId: string }) => void): () => void;
   onSessionEvent(cb: (e: SessionEventPayload) => void): () => void;
   onCheckpointsChanged(cb: (e: { sessionId: string }) => void): () => void;
   onCheckpointError(

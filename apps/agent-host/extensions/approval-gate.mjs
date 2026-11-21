@@ -32,6 +32,9 @@ const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 
+/** 计划门的协调工具（M-03）：不落盘改文件，由计划门扩展自身管控，审批门豁免。 */
+const PLAN_TOOLS = new Set(["submit_plan", "plan_progress"]);
+
 /** 危险命令清单（PRD M-02）：任何非 YOLO 模式下独立二次确认。 */
 const DANGER_PATTERNS = [
   /\brm\s+(-[a-z]*r[a-z]*f\b|-[a-z]*f[a-z]*r\b|--recursive\b[^|;&]*--force\b)/i,
@@ -115,6 +118,7 @@ export default function (pi) {
     const tool = event.toolName;
     const input = event.input ?? {};
     if (READ_TOOLS.has(tool)) return undefined;
+    if (PLAN_TOOLS.has(tool)) return undefined;
 
     const isBash = tool === "bash";
     const command = isBash ? String(input.command ?? "") : "";

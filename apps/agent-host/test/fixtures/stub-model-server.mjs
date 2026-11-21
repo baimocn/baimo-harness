@@ -22,6 +22,20 @@ export const STUB_EDIT_OLD = "line two";
 export const STUB_EDIT_NEW = "line TWO";
 /** [[stub:bash-danger]] 剧本：发一条危险命令（模块 4 构建模式危险清单 E2E）。 */
 export const STUB_DANGER_COMMAND = "rm -rf ./stub-danger-target";
+/**
+ * [[stub:plan]] / [[stub:plan-fail]] 剧本（阶段 2 引导簇 · 计划面板 E2E）：
+ * 模拟一个守计划流程的模型——先 submit_plan 交计划，批准后逐步执行
+ * （bash → plan_progress → write → plan_progress → bash → plan_progress），
+ * 最后收尾文本；plan-fail 变体在第二步回报 failed 后直接收尾。
+ * submit_plan 的结果含「未获批准」时立即收尾（模拟模型服从拒绝）。
+ */
+export const STUB_PLAN_STEPS = [
+  { title: "第一步：查看现状", action: "bash" },
+  { title: "第二步：写入文件", action: "write" },
+  { title: "第三步：收尾检查", action: "bash" },
+];
+export const STUB_PLAN_STEP1_COMMAND = "echo stub-step-1";
+export const STUB_PLAN_STEP3_COMMAND = "echo stub-step-3";
 
 function sseChunk(delta, finishReason = null, usage = undefined) {
   const chunk = {
@@ -47,6 +61,82 @@ function extractText(content) {
   return "";
 }
 
+/** 计划剧本：按最后一条用户消息之后已出现的工具调用序列推进。 */
+function decidePlanTurn(messages, lastUserIdx, failVariant) {
+  const after = messages.slice(lastUserIdx + 1);
+  const callNames = [];
+  const resultByCallId = new Map();
+  const nameByCallId = new Map();
+  for (const m of after) {
+    if (m?.role === "assistant" && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        callNames.push(tc.function?.name ?? "");
+        if (tc.id) nameByCallId.set(tc.id, tc.function?.name ?? "");
+      }
+    }
+    if (m?.role === "tool" && m.tool_call_id) {
+      resultByCallId.set(m.tool_call_id, extractText(m.content));
+    }
+  }
+  const seq = callNames.join(",");
+  if (seq === "") {
+    return {
+      final: false,
+      name: "submit_plan",
+      args: { steps: STUB_PLAN_STEPS },
+    };
+  }
+  if (seq === "submit_plan") {
+    const submitResult = [...nameByCallId.entries()]
+      .filter(([, n]) => n === "submit_plan")
+      .map(([id]) => resultByCallId.get(id) ?? "")
+      .join("");
+    if (submitResult.includes("未获批准")) return { final: true };
+    return {
+      final: false,
+      name: "bash",
+      args: { command: STUB_PLAN_STEP1_COMMAND },
+    };
+  }
+  if (seq === "submit_plan,bash") {
+    return {
+      final: false,
+      name: "plan_progress",
+      args: { stepIndex: 0, status: "done" },
+    };
+  }
+  if (seq === "submit_plan,bash,plan_progress") {
+    return {
+      final: false,
+      name: "write",
+      args: { path: STUB_WRITE_PATH, content: STUB_WRITE_CONTENT },
+    };
+  }
+  if (seq === "submit_plan,bash,plan_progress,write") {
+    return {
+      final: false,
+      name: "plan_progress",
+      args: { stepIndex: 1, status: failVariant ? "failed" : "done" },
+    };
+  }
+  if (seq === "submit_plan,bash,plan_progress,write,plan_progress") {
+    if (failVariant) return { final: true };
+    return {
+      final: false,
+      name: "bash",
+      args: { command: STUB_PLAN_STEP3_COMMAND },
+    };
+  }
+  if (seq === "submit_plan,bash,plan_progress,write,plan_progress,bash") {
+    return {
+      final: false,
+      name: "plan_progress",
+      args: { stepIndex: 2, status: "done" },
+    };
+  }
+  return { final: true };
+}
+
 /**
  * 剧本判定：以「最后一条用户消息」为准——它之后已有 tool 结果则收尾；
  * 否则按消息里的标记决定第一轮发哪个工具（缺省 bash）。
@@ -62,6 +152,12 @@ function decideTurn(parsed) {
   }
   const userText =
     lastUserIdx >= 0 ? extractText(messages[lastUserIdx].content) : "";
+  if (userText.includes("[[stub:plan-fail]]")) {
+    return decidePlanTurn(messages, lastUserIdx, true);
+  }
+  if (userText.includes("[[stub:plan]]")) {
+    return decidePlanTurn(messages, lastUserIdx, false);
+  }
   const hasResultAfter = messages
     .slice(lastUserIdx + 1)
     .some((m) => m && m.role === "tool");
@@ -88,6 +184,14 @@ function decideTurn(parsed) {
       final: false,
       name: "bash",
       args: { command: STUB_DANGER_COMMAND },
+    };
+  }
+  const genericBash = userText.match(/\[\[stub:bash:([^\]]+)\]\]/);
+  if (genericBash) {
+    return {
+      final: false,
+      name: "bash",
+      args: { command: genericBash[1] },
     };
   }
   return {
@@ -178,8 +282,10 @@ function completionJson(turn) {
 /**
  * 启动桩服务器（监听 127.0.0.1 随机端口）。
  * 返回 { url, requests, close }：requests 记录每个请求体，供测试断言轮次。
+ * chunkDelayMs：每个 SSE 分片之间的间隔（缺省 5ms 与旧行为一致）；
+ * steering/计划类测试需要把一轮拉长，才来得及在运行中插入指令。
  */
-export async function createStubModelServer({ hang = false } = {}) {
+export async function createStubModelServer({ hang = false, chunkDelayMs = 5 } = {}) {
   const requests = [];
   const sockets = new Set();
   const server = createServer((req, res) => {
@@ -216,7 +322,7 @@ export async function createStubModelServer({ hang = false } = {}) {
             res.write("data: [DONE]\n\n");
             res.end();
           }
-        }, 5);
+        }, chunkDelayMs);
       } else {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(completionJson(turn)));

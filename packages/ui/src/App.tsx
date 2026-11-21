@@ -13,12 +13,18 @@ import type {
   CheckpointDto,
   HostSnapshotDto,
   PermissionMode,
+  PlanEditRequestDto,
+  PlanRequestDto,
+  PlanSelectChoice,
+  PlanViewDto,
   SessionMetaDto,
   SessionStatsDto,
 } from "./bridge.js";
 import {
   ApprovalCard,
   Composer,
+  PlanCard,
+  PlanEditorModal,
   RightPanel,
   SessionList,
   StatusBar,
@@ -48,6 +54,15 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   >(new Map());
   const [pendingApprovals, setPendingApprovals] = useState<
     Map<string, ApprovalRequestDto>
+  >(new Map());
+  const [planViews, setPlanViews] = useState<Map<string, PlanViewDto>>(
+    new Map(),
+  );
+  const [pendingPlanSelects, setPendingPlanSelects] = useState<
+    Map<string, PlanRequestDto>
+  >(new Map());
+  const [pendingPlanEdits, setPendingPlanEdits] = useState<
+    Map<string, PlanEditRequestDto>
   >(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<RightTab>("changes");
@@ -95,6 +110,16 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     [bridge],
   );
 
+  const loadPlan = useCallback(
+    async (id: string) => {
+      const view = await bridge.getPlan(id).catch(() => null);
+      if (view) {
+        setPlanViews((prev) => new Map(prev).set(id, view));
+      }
+    },
+    [bridge],
+  );
+
   // 初次加载 + 事件订阅（订阅只注册一次，回调内用 ref 读最新 activeId）
   useEffect(() => {
     let disposed = false;
@@ -128,6 +153,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       }
       // 检查点以主进程快照为准重新拉取；快照同步状态
       loadCheckpoints(e.sessionId).catch(() => undefined);
+      loadPlan(e.sessionId).catch(() => undefined);
       refreshSnapshot().catch(() => undefined);
     });
     const offCkpt = bridge.onCheckpointsChanged((e) => {
@@ -139,6 +165,22 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         label: e.message,
         tone: "error",
       });
+    });
+    const offPlanRequested = bridge.onPlanRequested((e) => {
+      setPendingPlanSelects((prev) => new Map(prev).set(e.sessionId, e));
+      loadPlan(e.sessionId).catch(() => undefined);
+    });
+    const offPlanEdit = bridge.onPlanEditRequested((e) => {
+      // 裁决已由「编辑计划」答复，select 不再挂起；编辑请求接棒
+      setPendingPlanSelects((prev) => {
+        const next = new Map(prev);
+        next.delete(e.sessionId);
+        return next;
+      });
+      setPendingPlanEdits((prev) => new Map(prev).set(e.sessionId, e));
+    });
+    const offPlanChanged = bridge.onPlanChanged((e) => {
+      loadPlan(e.sessionId).catch(() => undefined);
     });
     const offApproval = bridge.onApprovalRequested((e) => {
       setPendingApprovals((prev) => new Map(prev).set(e.sessionId, e));
@@ -167,8 +209,11 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       offCkptErr();
       offApproval();
       offApprovalNotice();
+      offPlanRequested();
+      offPlanEdit();
+      offPlanChanged();
     };
-  }, [bridge, loadCheckpoints, loadHistory, refreshSnapshot, updateStream]);
+  }, [bridge, loadCheckpoints, loadHistory, loadPlan, refreshSnapshot, updateStream]);
 
   const allSessions = useMemo(() => {
     if (!snapshot) return [];
@@ -210,6 +255,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     setActiveId(id);
     if (!streams.has(id)) await loadHistory(id);
     loadCheckpoints(id).catch(() => undefined);
+    loadPlan(id).catch(() => undefined);
     const meta = allSessions.find((s) => s.id === id);
     if (meta?.live && !statsMap.has(id)) {
       const st = await bridge.stats(id).catch(() => null);
@@ -334,6 +380,65 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     loadCheckpoints(activeId).catch(() => undefined);
   };
 
+  /** 计划裁决：回注主进程 → 计划门 select 往返；选「编辑」后编辑弹窗接棒，裁决不撤。 */
+  const handlePlanSelect = async (choice: PlanSelectChoice) => {
+    if (!activeId) return;
+    const req = pendingPlanSelects.get(activeId);
+    if (!req) return;
+    const res = await bridge.respondPlanSelect(activeId, req.requestId, choice);
+    if (!res.ok) {
+      notice(activeId, `计划裁决发送失败：${res.error ?? "未知错误"}`, "error");
+      return;
+    }
+    if (choice !== "edit") {
+      setPendingPlanSelects((prev) => {
+        const next = new Map(prev);
+        next.delete(activeId);
+        return next;
+      });
+    }
+    const label =
+      choice === "approve" ? "批准执行" : choice === "edit" ? "编辑计划" : "拒绝计划";
+    notice(activeId, `计划裁决：${label}`);
+    loadPlan(activeId).catch(() => undefined);
+  };
+
+  const handlePlanEditDone = async (text: string | null) => {
+    if (!activeId) return;
+    const req = pendingPlanEdits.get(activeId);
+    if (!req) return;
+    const res = await bridge.respondPlanEdit(activeId, req.requestId, text);
+    if (!res.ok) {
+      notice(activeId, `计划编辑发送失败：${res.error ?? "未知错误"}`, "error");
+      return;
+    }
+    setPendingPlanEdits((prev) => {
+      const next = new Map(prev);
+      next.delete(activeId);
+      return next;
+    });
+    notice(activeId, text === null ? "已取消编辑计划" : "计划编辑已保存，等待批准");
+    loadPlan(activeId).catch(() => undefined);
+  };
+
+  const handlePlanRequiredChange = async (required: boolean) => {
+    if (!activeId) return;
+    await bridge.setPlanRequired(activeId, required);
+    loadPlan(activeId).catch(() => undefined);
+  };
+
+  const handlePlanPauseChange = async (paused: boolean) => {
+    if (!activeId) return;
+    await bridge.setPlanPaused(activeId, paused);
+    notice(
+      activeId,
+      paused
+        ? "已请求暂停计划（当前步结束后生效）"
+        : "已解除计划暂停（再发一条指令可继续执行）",
+    );
+    loadPlan(activeId).catch(() => undefined);
+  };
+
   /** 审批裁决：回注主进程 → extension_ui_response；卡片随即撤下，结果以工具卡/提示显形。 */
   const handleApprovalRespond = async (choice: ApprovalChoice) => {
     if (!activeId) return;
@@ -434,6 +539,14 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
             </div>
           )}
           <StreamView state={activeStream ?? initialStreamState} onDiffMark={handleDiffMark} />
+          {activeId && planViews.get(activeId)?.plan && (
+            <PlanCard
+              view={planViews.get(activeId)!}
+              pendingSelect={!!pendingPlanSelects.get(activeId)}
+              onSelect={handlePlanSelect}
+              onPauseChange={handlePlanPauseChange}
+            />
+          )}
           {activeId && pendingApprovals.get(activeId) && (
             <ApprovalCard
               request={pendingApprovals.get(activeId)!}
@@ -456,6 +569,9 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
           checkpoints={activeId ? (checkpointsMap.get(activeId) ?? []) : []}
           onRollbackCheckpoint={handleRollbackCheckpoint}
           onManualCheckpoint={handleManualCheckpoint}
+          planView={activeId ? (planViews.get(activeId) ?? null) : null}
+          onPlanRequiredChange={handlePlanRequiredChange}
+          onPlanPauseChange={handlePlanPauseChange}
         />
       </div>
       <StatusBar
@@ -464,6 +580,13 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         rpcState={rpc.state}
         dataDir={snapshot.dataDir}
       />
+      {activeId && pendingPlanEdits.get(activeId) && (
+        <PlanEditorModal
+          prefill={pendingPlanEdits.get(activeId)!.prefill}
+          onSubmit={(text) => handlePlanEditDone(text)}
+          onCancel={() => handlePlanEditDone(null)}
+        />
+      )}
       {confirmDelete && (
         <div className="modal-mask" data-testid="delete-dialog">
           <div className="modal">

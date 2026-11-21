@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import {
   AgentHost,
   approvalGateExtensionPath,
+  planGateExtensionPath,
   type SessionHandle,
   type SessionMeta,
 } from "@baimo-harness/agent-host";
@@ -39,6 +40,10 @@ import type {
   HostSnapshotDto,
   MilestoneDto,
   PermissionMode,
+  PlanSelectChoice,
+  PlanStateDto,
+  PlanStepDto,
+  PlanViewDto,
   SessionMetaDto,
   SessionStatsDto,
 } from "@baimo-harness/ui";
@@ -53,6 +58,12 @@ interface DesktopSettings {
   perSessionMode: Record<string, PermissionMode>;
   /** 会话 → 审批策略文件 key（策略文件在 approval/<key>.json，含本会话授权）。 */
   approvalKeys: Record<string, string>;
+  /** 会话 → 计划文件 key（状态 plan/<key>.state.json + 策略 plan/<key>.policy.json）。 */
+  planKeys: Record<string, string>;
+  /** 会话 → 是否开启「计划先行」（M-03，缺省关闭，界面开关）。 */
+  perSessionPlanRequired: Record<string, boolean>;
+  /** 会话 → 计划是否被用户暂停（经策略文件在工具调用边界生效）。 */
+  perSessionPlanPaused: Record<string, boolean>;
   selectedModel: { provider: string; modelId: string } | null;
 }
 
@@ -60,6 +71,9 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   permissionMode: "build",
   perSessionMode: {},
   approvalKeys: {},
+  planKeys: {},
+  perSessionPlanRequired: {},
+  perSessionPlanPaused: {},
   selectedModel: null,
 };
 
@@ -274,7 +288,125 @@ function prepareGate(mode: PermissionMode): { key: string; policyFile: string } 
 }
 
 function gatePiArgs(): string[] {
-  return ["--extension", approvalGateExtensionPath()];
+  return [
+    "--extension",
+    approvalGateExtensionPath(),
+    "--extension",
+    planGateExtensionPath(),
+  ];
+}
+
+/* ---------- M-03 计划：状态/策略文件与扩展挂载 ---------- */
+
+const planDir = join(dataDir, "plan");
+
+/** 计划裁决三档 → 计划门 select 的选项原文（与 plan-gate.mjs 保持一致）。 */
+const PLAN_CHOICE_VALUES: Record<PlanSelectChoice, string> = {
+  approve: "批准执行",
+  edit: "编辑计划",
+  deny: "拒绝计划",
+};
+
+/** 计划状态变更 notify → 界面成条提示文案（progress/settled 太频繁，只刷新不提示）。 */
+const PLAN_NOTICE_LABELS: Record<string, string> = {
+  submitted: "计划已提交，等待批准",
+  approved: "计划已批准，开始执行",
+  rejected: "计划被拒绝，本轮不执行写操作",
+  approval_timeout: "计划审批超时（5 分钟未裁决），未获批准",
+  edited: "计划已按你的编辑更新，等待批准",
+  paused: "计划已暂停",
+  resumed: "计划已恢复执行",
+};
+
+function planKeyFor(sessionId: string): string {
+  let key = settings.value.planKeys[sessionId];
+  if (!key) {
+    key = randomUUID();
+    settings.update({
+      planKeys: { ...settings.value.planKeys, [sessionId]: key },
+    });
+  }
+  return key;
+}
+
+function planStateFileFor(sessionId: string): string {
+  return join(planDir, `${planKeyFor(sessionId)}.state.json`);
+}
+
+function planPolicyFileFor(sessionId: string): string {
+  return join(planDir, `${planKeyFor(sessionId)}.policy.json`);
+}
+
+/** 写/刷新某会话的计划策略文件：required/paused 取壳层设置的最新值。 */
+function writePlanPolicy(sessionId: string): string {
+  mkdirSync(planDir, { recursive: true });
+  const file = planPolicyFileFor(sessionId);
+  writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        required: settings.value.perSessionPlanRequired[sessionId] === true,
+        paused: settings.value.perSessionPlanPaused[sessionId] === true,
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+  return file;
+}
+
+/** 新会话在拿到宿主 id 之前先备好计划策略文件（状态文件由扩展在提交计划时创建）。 */
+function preparePlan(): { key: string; stateFile: string; policyFile: string } {
+  mkdirSync(planDir, { recursive: true });
+  const key = randomUUID();
+  const stateFile = join(planDir, `${key}.state.json`);
+  const policyFile = join(planDir, `${key}.policy.json`);
+  writeFileSync(
+    policyFile,
+    JSON.stringify({ required: false, paused: false }, null, 2) + "\n",
+    "utf8",
+  );
+  return { key, stateFile, policyFile };
+}
+
+/** 读计划状态文件（扩展写、壳层只读）；无文件/损坏一律返回 null，不编造计划。 */
+function readPlanState(sessionId: string): PlanStateDto | null {
+  try {
+    const raw = readFileSync(planStateFileFor(sessionId), "utf8");
+    const parsed = JSON.parse(raw) as {
+      status?: unknown;
+      task?: unknown;
+      steps?: unknown;
+      updatedAt?: unknown;
+    };
+    if (!parsed || !Array.isArray(parsed.steps)) return null;
+    const steps: PlanStepDto[] = parsed.steps.map((s) => {
+      const step = (s ?? {}) as Record<string, unknown>;
+      return {
+        title: String(step.title ?? ""),
+        action: String(step.action ?? "task"),
+        status: String(step.status ?? "pending"),
+        ...(typeof step.note === "string" ? { note: step.note } : {}),
+      };
+    });
+    return {
+      status: String(parsed.status ?? ""),
+      task: typeof parsed.task === "string" ? parsed.task : "",
+      steps,
+      updatedAt: String(parsed.updatedAt ?? ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function planView(sessionId: string): PlanViewDto {
+  return {
+    plan: readPlanState(sessionId),
+    required: settings.value.perSessionPlanRequired[sessionId] === true,
+    paused: settings.value.perSessionPlanPaused[sessionId] === true,
+  };
 }
 
 const live = new Map<string, SessionHandle>();
@@ -341,18 +473,79 @@ async function pushStats(sessionId: string): Promise<void> {
  * notify 转成成条提示；其余对话框类请求（非审批门来源）明确取消并显形，
  * 绝不让 Pi 挂死等待；fire-and-forget 类（setStatus 等）放行不管。
  */
+/** 解析扩展 UI 请求里夹带的 JSON 载荷（审批门/计划门都用 title/message 夹带）。 */
+function parseJsonPayload(text: unknown): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(String(text ?? "")) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function routeExtensionUi(
   handle: SessionHandle,
   record: Record<string, unknown>,
 ): void {
   const method = String(record.method ?? "");
   if (method === "notify") {
+    // M-03：计划门的状态 notify 是机器载荷——转成 plan:changed 刷新 + 人话提示，不把 JSON 原文糊到执行流上
+    const planPayload = parseJsonPayload(record.message);
+    if (planPayload?.baimoPlan === 1 && planPayload.kind === "state") {
+      send("plan:changed", { sessionId: handle.id });
+      const label = PLAN_NOTICE_LABELS[String(planPayload.event ?? "")];
+      if (label) {
+        send("approval:notice", {
+          sessionId: handle.id,
+          message: label,
+          notifyType:
+            planPayload.event === "rejected" ||
+            planPayload.event === "approval_timeout"
+              ? "warning"
+              : "info",
+        });
+      }
+      return;
+    }
     send("approval:notice", {
       sessionId: handle.id,
       message: String(record.message ?? ""),
       notifyType: String(record.notifyType ?? "info"),
     });
     return;
+  }
+  if (method === "select") {
+    // M-03：计划门的裁决请求（submit_plan 阻塞中）→ 计划卡
+    const planPayload = parseJsonPayload(record.title);
+    if (planPayload?.baimoPlan === 1) {
+      const steps = Array.isArray(planPayload.steps)
+        ? (planPayload.steps as Array<Record<string, unknown>>).map((s) => ({
+            title: String(s?.title ?? ""),
+            action: String(s?.action ?? "task"),
+            status: String(s?.status ?? "pending"),
+          }))
+        : [];
+      send("plan:requested", {
+        sessionId: handle.id,
+        requestId: String(record.id),
+        steps,
+      });
+      return;
+    }
+  }
+  if (method === "editor") {
+    // M-03：计划门的编辑请求 → 计划编辑弹窗（逐行改步骤）
+    const planPayload = parseJsonPayload(record.title);
+    if (planPayload?.baimoPlan === 1) {
+      send("plan:edit-requested", {
+        sessionId: handle.id,
+        requestId: String(record.id),
+        prefill: String(record.prefill ?? ""),
+      });
+      return;
+    }
   }
   if (method === "select") {
     try {
@@ -435,6 +628,8 @@ function registerIpc(): void {
     const model = selectedModel();
     // M-02：先备策略文件（模式=当前全局模式），进程挂审批门扩展
     const gate = prepareGate(settings.value.permissionMode);
+    // M-03：计划策略文件（缺省未开启计划先行）与状态文件路径（扩展提交计划时创建）
+    const plan = preparePlan();
     const handle = await host.openSession({
       title: title ?? `新会话 ${new Date().toLocaleTimeString()}`,
       workspaceDir,
@@ -444,7 +639,11 @@ function registerIpc(): void {
           : []),
         ...gatePiArgs(),
       ],
-      env: { BAIMO_APPROVAL_POLICY: gate.policyFile },
+      env: {
+        BAIMO_APPROVAL_POLICY: gate.policyFile,
+        BAIMO_PLAN_STATE: plan.stateFile,
+        BAIMO_PLAN_POLICY: plan.policyFile,
+      },
       modelRef: model,
     });
     live.set(handle.id, handle);
@@ -458,6 +657,10 @@ function registerIpc(): void {
       approvalKeys: {
         ...settings.value.approvalKeys,
         [handle.id]: gate.key,
+      },
+      planKeys: {
+        ...settings.value.planKeys,
+        [handle.id]: plan.key,
       },
     });
     return toDto(handle.meta);
@@ -530,6 +733,8 @@ function registerIpc(): void {
     const model = meta.modelRef ?? selectedModel();
     // M-02：续接同样挂审批门；策略文件按会话 key 找回（授权跨续接保留）
     const policyFile = writePolicy(id);
+    // M-03：计划策略按会话 key 刷新（开关状态跨续接保留），状态文件同 key 找回
+    const planPolicyFile = writePlanPolicy(id);
     const handle = await host.resumeSession(id, {
       piArgs: [
         ...(model
@@ -537,7 +742,11 @@ function registerIpc(): void {
           : []),
         ...gatePiArgs(),
       ],
-      env: { BAIMO_APPROVAL_POLICY: policyFile },
+      env: {
+        BAIMO_APPROVAL_POLICY: policyFile,
+        BAIMO_PLAN_STATE: planStateFileFor(id),
+        BAIMO_PLAN_POLICY: planPolicyFile,
+      },
     });
     live.set(handle.id, handle);
     wireHandle(handle);
@@ -635,6 +844,63 @@ function registerIpc(): void {
       return { selectedModel: model };
     },
   );
+
+  /* ---------- 计划（M-03） ---------- */
+
+  ipcMain.handle("plan:get", (_e, id: string) => planView(id));
+
+  ipcMain.handle(
+    "plan:respond-select",
+    (_e, sessionId: string, requestId: string, choice: PlanSelectChoice) => {
+      const handle = live.get(sessionId);
+      if (!handle) return { ok: false, error: "会话未在运行" };
+      const value = PLAN_CHOICE_VALUES[choice];
+      if (!value) return { ok: false, error: `未知裁决: ${String(choice)}` };
+      handle.respondExtensionUi(requestId, { value });
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    "plan:respond-edit",
+    (_e, sessionId: string, requestId: string, text: string | null) => {
+      const handle = live.get(sessionId);
+      if (!handle) return { ok: false, error: "会话未在运行" };
+      if (text === null) {
+        handle.respondExtensionUi(requestId, { cancelled: true });
+      } else {
+        handle.respondExtensionUi(requestId, { value: text });
+      }
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    "plan:set-required",
+    (_e, sessionId: string, required: boolean) => {
+      settings.update({
+        perSessionPlanRequired: {
+          ...settings.value.perSessionPlanRequired,
+          [sessionId]: required,
+        },
+      });
+      writePlanPolicy(sessionId);
+      send("plan:changed", { sessionId });
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle("plan:set-paused", (_e, sessionId: string, paused: boolean) => {
+    settings.update({
+      perSessionPlanPaused: {
+        ...settings.value.perSessionPlanPaused,
+        [sessionId]: paused,
+      },
+    });
+    writePlanPolicy(sessionId);
+    send("plan:changed", { sessionId });
+    return { ok: true };
+  });
 
   ipcMain.handle("session:stats", async (_e, id: string) => {
     const handle = live.get(id);

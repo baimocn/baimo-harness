@@ -10,6 +10,9 @@ import {
   type CheckpointDto,
   type HostSnapshotDto,
   type PermissionMode,
+  type PlanSelectChoice,
+  type PlanStateDto,
+  type PlanViewDto,
   type SessionMetaDto,
   type SessionStatsDto,
 } from "./bridge.js";
@@ -99,7 +102,7 @@ export function TopBar(props: {
       </div>
       {mode === "yolo" && (
         <div className="topbar-alert" data-testid="yolo-alert">
-          YOLO 模式：全放开。权限模式仅记录状态，审批拦截在阶段 2 控制簇接入。
+          YOLO 模式：工具调用全自动执行，不弹审批卡（开启前已强制留快照）。
         </div>
       )}
     </header>
@@ -413,6 +416,150 @@ export function ApprovalCard(props: {
   );
 }
 
+/* ---------------- M-03 计划面板 ---------------- */
+
+export const PLAN_STATUS_LABELS: Record<string, string> = {
+  awaiting_approval: "待批准",
+  executing: "执行中",
+  paused: "已暂停",
+  completed: "已完成",
+  completed_with_failures: "已完成（含失败）",
+  incomplete: "已结束（未完成）",
+  rejected: "已拒绝",
+};
+
+export function planStatusLabel(status: string): string {
+  return PLAN_STATUS_LABELS[status] ?? status;
+}
+
+function PlanStepsList(props: { plan: PlanStateDto }) {
+  return (
+    <ol className="plan-steps">
+      {props.plan.steps.map((s, i) => (
+        <li
+          key={i}
+          className={`plan-step plan-step-${s.status}`}
+          data-testid="plan-step"
+          data-status={s.status}
+        >
+          <span className="plan-step-icon">
+            {s.status === "done" ? "✓" : s.status === "failed" ? "✗" : "○"}
+          </span>
+          <span className="plan-step-title">{s.title}</span>
+          <span className="dim">{s.action}</span>
+          {s.note && <span className="dim">（{s.note}）</span>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * 计划卡（中栏，执行流下方）：计划提交后出现。
+ * 待批准且裁决请求在途时给三档裁决（批准 / 编辑 / 拒绝，规则见 M-03）；
+ * 执行中可「在这一步后暂停」；暂停中可恢复（恢复后需再发指令继续）。
+ */
+export function PlanCard(props: {
+  view: PlanViewDto;
+  pendingSelect: boolean;
+  onSelect: (choice: PlanSelectChoice) => void;
+  onPauseChange: (paused: boolean) => void;
+}) {
+  const plan = props.view.plan;
+  if (!plan) return null;
+  return (
+    <div className="plan-card" data-testid="plan-card" data-status={plan.status}>
+      <div className="plan-head">
+        <strong>计划</strong>
+        <span className="dim" data-testid="plan-status">
+          {planStatusLabel(plan.status)}
+        </span>
+        {plan.status === "executing" && (
+          <button
+            type="button"
+            data-testid="plan-pause"
+            onClick={() => props.onPauseChange(true)}
+            title="当前步结束后暂停：后续工具调用在边界被拦，进度原样保留"
+          >
+            在这一步后暂停
+          </button>
+        )}
+        {plan.status === "paused" && (
+          <button
+            type="button"
+            data-testid="plan-resume"
+            onClick={() => props.onPauseChange(false)}
+            title="解除暂停；随后发一条指令（如「继续执行计划」）即可续跑"
+          >
+            恢复执行
+          </button>
+        )}
+      </div>
+      <PlanStepsList plan={plan} />
+      {props.pendingSelect && plan.status === "awaiting_approval" && (
+        <div className="approval-actions">
+          <button
+            type="button"
+            data-testid="plan-approve"
+            onClick={() => props.onSelect("approve")}
+          >
+            批准执行
+          </button>
+          <button
+            type="button"
+            data-testid="plan-edit"
+            onClick={() => props.onSelect("edit")}
+          >
+            编辑计划
+          </button>
+          <button
+            type="button"
+            data-testid="plan-deny"
+            className="btn-danger"
+            onClick={() => props.onSelect("deny")}
+          >
+            拒绝计划
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 计划编辑弹窗：逐行一步，可增删行、调整顺序；确认后回到裁决（再点批准）。 */
+export function PlanEditorModal(props: {
+  prefill: string;
+  onSubmit: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(props.prefill);
+  return (
+    <div className="modal-mask" data-testid="plan-editor">
+      <div className="modal plan-editor-modal">
+        <p>编辑计划：每行一步，可增删行、调整顺序。保存后回到裁决，点「批准执行」生效。</p>
+        <textarea
+          data-testid="plan-editor-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={8}
+        />
+        <div className="modal-actions">
+          <button type="button" onClick={props.onCancel}>
+            取消编辑
+          </button>
+          <button
+            type="button"
+            data-testid="plan-editor-save"
+            onClick={() => props.onSubmit(text)}
+          >
+            保存编辑
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function RightPanel(props: {
   tab: RightTab;
   onTab: (t: RightTab) => void;
@@ -420,6 +567,9 @@ export function RightPanel(props: {
   checkpoints: CheckpointDto[];
   onRollbackCheckpoint: (checkpointId: string) => void;
   onManualCheckpoint: () => void;
+  planView: PlanViewDto | null;
+  onPlanRequiredChange: (required: boolean) => void;
+  onPlanPauseChange: (paused: boolean) => void;
 }) {
   const changes = props.state ? selectFileChanges(props.state) : [];
   const tabs: Array<{ id: RightTab; label: string }> = [
@@ -513,7 +663,56 @@ export function RightPanel(props: {
         )}
         {props.tab === "plan" && (
           <div data-testid="panel-plan">
-            <p className="dim pad">计划面板占位 —— M-03 在阶段 2 实现（结构占位，本块未实现）。</p>
+            <div className="plan-tab-head">
+              <label className="plan-required-toggle">
+                <input
+                  type="checkbox"
+                  data-testid="plan-required-toggle"
+                  checked={props.planView?.required ?? false}
+                  onChange={(e) => props.onPlanRequiredChange(e.target.checked)}
+                />
+                计划先行（写操作先过计划批准）
+              </label>
+              <span className="dim">
+                开启后 agent 动手前必须提交计划并获批准，未批准的写操作会被硬拦；暂停在工具调用边界生效。
+              </span>
+            </div>
+            {!props.planView?.plan ? (
+              <p className="dim pad">
+                本会话暂无计划：开启「计划先行」后发一条任务，agent 会先提交计划到这里。
+              </p>
+            ) : (
+              <div className="pad">
+                <div className="plan-head">
+                  <strong>当前计划</strong>
+                  <span className="dim" data-testid="plan-tab-status">
+                    {planStatusLabel(props.planView.plan.status)}
+                  </span>
+                  {props.planView.plan.status === "executing" && (
+                    <button
+                      type="button"
+                      data-testid="plan-tab-pause"
+                      onClick={() => props.onPlanPauseChange(true)}
+                    >
+                      暂停
+                    </button>
+                  )}
+                  {props.planView.plan.status === "paused" && (
+                    <button
+                      type="button"
+                      data-testid="plan-tab-resume"
+                      onClick={() => props.onPlanPauseChange(false)}
+                    >
+                      恢复
+                    </button>
+                  )}
+                </div>
+                {props.planView.plan.task && (
+                  <p className="dim plan-task">任务：{props.planView.plan.task}</p>
+                )}
+                <PlanStepsList plan={props.planView.plan} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -649,7 +848,7 @@ export function StatusBar(props: {
       <span className="dim">会话存储：{props.dataDir}</span>
       <span className="spacer" />
       <span className="dim" data-testid="mode-note">
-        权限模式仅状态与记录，审批拦截未接入（下一块）
+        审批门已接入（M-02）：写操作按当前模式裁决；计划先行见「计划」页签（M-03）
       </span>
     </footer>
   );

@@ -10,6 +10,8 @@ import type {
   BaimoBridge,
   CheckpointDto,
   PermissionMode,
+  PlanEditRequestDto,
+  PlanRequestDto,
   ProcessExitPayload,
   RollbackReportDto,
   RunSettledPayload,
@@ -62,6 +64,24 @@ const api: BaimoBridge = {
   onCheckpointError: (
     cb: (e: { sessionId: string; message: string }) => void,
   ) => subscribe("checkpoint:error", cb),
+  getPlan: (id: string) => ipcRenderer.invoke("plan:get", id),
+  respondPlanSelect: (sessionId: string, requestId: string, choice: string) =>
+    ipcRenderer.invoke("plan:respond-select", sessionId, requestId, choice),
+  respondPlanEdit: (
+    sessionId: string,
+    requestId: string,
+    text: string | null,
+  ) => ipcRenderer.invoke("plan:respond-edit", sessionId, requestId, text),
+  setPlanRequired: (sessionId: string, required: boolean) =>
+    ipcRenderer.invoke("plan:set-required", sessionId, required),
+  setPlanPaused: (sessionId: string, paused: boolean) =>
+    ipcRenderer.invoke("plan:set-paused", sessionId, paused),
+  onPlanRequested: (cb: (e: PlanRequestDto) => void) =>
+    subscribe("plan:requested", cb),
+  onPlanEditRequested: (cb: (e: PlanEditRequestDto) => void) =>
+    subscribe("plan:edit-requested", cb),
+  onPlanChanged: (cb: (e: { sessionId: string }) => void) =>
+    subscribe("plan:changed", cb),
   onSessionEvent: (cb: (e: SessionEventPayload) => void) =>
     subscribe("session:event", cb),
   onRunSettled: (cb: (e: RunSettledPayload) => void) =>

@@ -98,6 +98,24 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .approval-args { max-height: 180px; overflow: auto; background: var(--bg); border: 1px solid var(--border); padding: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
 .approval-actions { display: flex; gap: 8px; }
 .btn-danger { border-color: var(--err); color: var(--err); }
+.plan-card { border: 1px solid var(--accent); border-left: 4px solid var(--accent); background: var(--panel2); margin: 8px 12px; padding: 10px 12px; }
+.plan-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.plan-steps { list-style: none; margin: 0 0 8px; padding: 0; }
+.plan-step { display: flex; gap: 7px; align-items: baseline; padding: 3px 0; }
+.plan-step-icon { width: 14px; text-align: center; flex-shrink: 0; }
+.plan-step-done .plan-step-icon { color: var(--ok); }
+.plan-step-failed .plan-step-icon { color: var(--err); }
+.plan-step-failed .plan-step-title { color: var(--err); }
+.plan-step-pending { color: var(--dim); }
+.plan-step-pending .plan-step-title { color: var(--text); }
+.plan-tab-head { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.plan-required-toggle { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.plan-task { word-break: break-all; }
+.plan-editor-modal { max-width: 520px; width: 90vw; }
+.plan-editor-modal textarea {
+  width: 100%; background: #101216; color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px; font-family: inherit;
+}
 .checkpoint-head { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; }
 .checkpoint-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-top: 1px solid var(--border); }
 .checkpoint-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

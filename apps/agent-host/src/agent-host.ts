@@ -52,6 +52,17 @@ export function approvalGateExtensionPath(): string {
   return join(here, "..", "extensions", "approval-gate.mjs");
 }
 
+/**
+ * 随附的计划门扩展（M-03）：apps/agent-host/extensions/plan-gate.mjs。
+ * 注册 submit_plan / plan_progress 工具；策略（required/paused）经
+ * BAIMO_PLAN_POLICY 文件逐次现读，计划状态写 BAIMO_PLAN_STATE 文件
+ * （扩展写、宿主/界面只读），先审后行与暂停都在 tool_call 层硬拦。
+ */
+export function planGateExtensionPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, "..", "extensions", "plan-gate.mjs");
+}
+
 export interface OpenSessionOptions {
   title?: string;
   workspaceDir?: string;

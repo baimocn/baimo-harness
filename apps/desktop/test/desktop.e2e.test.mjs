@@ -121,7 +121,7 @@ test(
         { timeout: 15_000 },
       );
 
-      // 权限模式切换：YOLO 选中 + 警示条如实标注「审批拦截未接入」
+      // 权限模式切换：YOLO 选中 + 警示条如实标注全自动行为（审批门接入后文案已更新）
       await page.click('[data-testid="mode-yolo"]');
       await page.waitForFunction(
         () =>
@@ -131,7 +131,7 @@ test(
         undefined,
         { timeout: 10_000 },
       );
-      await waitText(page, '[data-testid="yolo-alert"]', "审批拦截", 10_000);
+      await waitText(page, '[data-testid="yolo-alert"]', "全自动", 10_000);
 
       // 发指令 → 流式回复（先到第一轮文本，再到最终文本）
       await page.fill(
