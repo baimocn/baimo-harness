@@ -3,5 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "TODO: ui"
+  "description": "白墨 Harness 渲染层组件库：执行流归约器 + 三栏界面组件（React + TypeScript）",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./styles.css": "./dist/styles.css"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp src/styles.css dist/styles.css"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0"
+  }
 }
