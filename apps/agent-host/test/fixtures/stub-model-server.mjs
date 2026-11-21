@@ -2,8 +2,10 @@
  * 本地 OpenAI 兼容桩模型服务器（测试 fixture）。
  *
  * 实现 POST /v1/chat/completions 的流式（SSE）与非流式响应：
- * - 第一轮（历史里没有 tool 结果）：先流式吐固定文本，再发一个 bash 工具调用。
- * - 第二轮（历史里已有 tool 结果）：流式吐最终文本并 stop。
+ * - 第一轮（最后一条用户消息之后还没有 tool 结果）：先流式吐固定文本，再发一个工具调用。
+ * - 第二轮（该消息之后已有 tool 结果）：流式吐最终文本并 stop。
+ * - 用户消息含 [[stub:write]] / [[stub:edit]] 时，第一轮改发 write / edit
+ *   工具调用（模块 3 真实 diff 与模块 4 审批 E2E 的剧本开关）。
  * hang 模式：收到请求后永不响应（模拟模型无响应，供 K-02 异常终止测试）。
  */
 import { createServer } from "node:http";
@@ -11,6 +13,15 @@ import { createServer } from "node:http";
 const TEXT_TURN_1 = "Stub says hello. ";
 const TEXT_FINAL = "Stub final answer.";
 export const STUB_TOOL_COMMAND = "echo stub-tool-ok";
+/** [[stub:write]] 剧本：写这个文件（相对工作区路径）。 */
+export const STUB_WRITE_PATH = "stub-write.txt";
+export const STUB_WRITE_CONTENT = "stub line alpha\nstub line beta\n";
+/** [[stub:edit]] 剧本：把 stub-edit.txt 里的 STUB_EDIT_OLD 换成 STUB_EDIT_NEW。 */
+export const STUB_EDIT_PATH = "stub-edit.txt";
+export const STUB_EDIT_OLD = "line two";
+export const STUB_EDIT_NEW = "line TWO";
+/** [[stub:bash-danger]] 剧本：发一条危险命令（模块 4 构建模式危险清单 E2E）。 */
+export const STUB_DANGER_COMMAND = "rm -rf ./stub-danger-target";
 
 function sseChunk(delta, finishReason = null, usage = undefined) {
   const chunk = {
@@ -26,8 +37,68 @@ function sseChunk(delta, finishReason = null, usage = undefined) {
 
 const USAGE = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
 
-function turnChunks(hasToolResult) {
-  if (hasToolResult) {
+function extractText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part?.text === "string" ? part.text : ""))
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * 剧本判定：以「最后一条用户消息」为准——它之后已有 tool 结果则收尾；
+ * 否则按消息里的标记决定第一轮发哪个工具（缺省 bash）。
+ */
+function decideTurn(parsed) {
+  const messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const userText =
+    lastUserIdx >= 0 ? extractText(messages[lastUserIdx].content) : "";
+  const hasResultAfter = messages
+    .slice(lastUserIdx + 1)
+    .some((m) => m && m.role === "tool");
+  if (hasResultAfter) return { final: true };
+  if (userText.includes("[[stub:write]]")) {
+    return {
+      final: false,
+      name: "write",
+      args: { path: STUB_WRITE_PATH, content: STUB_WRITE_CONTENT },
+    };
+  }
+  if (userText.includes("[[stub:edit]]")) {
+    return {
+      final: false,
+      name: "edit",
+      args: {
+        path: STUB_EDIT_PATH,
+        edits: [{ oldText: STUB_EDIT_OLD, newText: STUB_EDIT_NEW }],
+      },
+    };
+  }
+  if (userText.includes("[[stub:bash-danger]]")) {
+    return {
+      final: false,
+      name: "bash",
+      args: { command: STUB_DANGER_COMMAND },
+    };
+  }
+  return {
+    final: false,
+    name: "bash",
+    args: { command: STUB_TOOL_COMMAND },
+  };
+}
+
+function turnChunks(turn) {
+  if (turn.final) {
     return [
       sseChunk({ role: "assistant", content: "" }),
       sseChunk({ content: TEXT_FINAL }),
@@ -43,7 +114,7 @@ function turnChunks(hasToolResult) {
           index: 0,
           id: "call_stub_1",
           type: "function",
-          function: { name: "bash", arguments: "" },
+          function: { name: turn.name, arguments: "" },
         },
       ],
     }),
@@ -51,7 +122,7 @@ function turnChunks(hasToolResult) {
       tool_calls: [
         {
           index: 0,
-          function: { arguments: JSON.stringify({ command: STUB_TOOL_COMMAND }) },
+          function: { arguments: JSON.stringify(turn.args) },
         },
       ],
     }),
@@ -59,7 +130,7 @@ function turnChunks(hasToolResult) {
   ];
 }
 
-function completionJson(hasToolResult) {
+function completionJson(turn) {
   const base = {
     id: "chatcmpl-stub",
     object: "chat.completion",
@@ -67,7 +138,7 @@ function completionJson(hasToolResult) {
     model: "stub-model",
     usage: USAGE,
   };
-  if (hasToolResult) {
+  if (turn.final) {
     return {
       ...base,
       choices: [
@@ -92,8 +163,8 @@ function completionJson(hasToolResult) {
               id: "call_stub_1",
               type: "function",
               function: {
-                name: "bash",
-                arguments: JSON.stringify({ command: STUB_TOOL_COMMAND }),
+                name: turn.name,
+                arguments: JSON.stringify(turn.args),
               },
             },
           ],
@@ -128,15 +199,14 @@ export async function createStubModelServer({ hang = false } = {}) {
       }
       requests.push(parsed);
       if (hang) return; // 永不响应：挂住连接，等测试杀进程收尾。
-      const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-      const hasToolResult = messages.some((m) => m && m.role === "tool");
+      const turn = decideTurn(parsed);
       if (parsed.stream) {
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
-        const chunks = turnChunks(hasToolResult);
+        const chunks = turnChunks(turn);
         let i = 0;
         const timer = setInterval(() => {
           if (i < chunks.length) {
@@ -149,7 +219,7 @@ export async function createStubModelServer({ hang = false } = {}) {
         }, 5);
       } else {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(completionJson(hasToolResult)));
+        res.end(JSON.stringify(completionJson(turn)));
       }
     });
   });
