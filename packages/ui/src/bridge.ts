@@ -95,9 +95,12 @@ export interface ApprovalRequestDto {
   mode: string;
   /** 理由位：为什么这次要审批（命中危险清单 / 编辑模式写操作）。 */
   reason: string;
+  /** 审批门下发的选项原文（卡片据此呈现档位，如 D-01 的「按命令模式始终允许」）。 */
+  options: string[];
 }
 
-export type ApprovalChoice = "once" | "session" | "deny";
+/** pattern = D-01 第三级：按命令模式持久允许（仅非危险 bash 的审批卡提供）。 */
+export type ApprovalChoice = "once" | "session" | "pattern" | "deny";
 
 /* ---------- M-03 计划面板 ---------- */
 

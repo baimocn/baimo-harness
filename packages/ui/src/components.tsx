@@ -568,14 +568,24 @@ export function LedgerPanel(props: {
 
 /**
  * 审批卡（M-02）：写类工具被审批门截停时出现，Pi 在裁决前不会执行。
- * 展示工具名 + 全参数 + 理由位（禁止盲签），三档裁决：
- * 允许一次 / 本会话始终允许 / 拒绝。
+ * 展示工具名 + 全参数 + 理由位（禁止盲签）。裁决档位：允许一次 /
+ * 本会话始终允许 / 拒绝；非危险 bash 另有 D-01 第三级「按命令模式
+ * 始终允许」（选项由审批门下发，卡上据 options 呈现，不自作主张）。
  */
 export function ApprovalCard(props: {
   request: ApprovalRequestDto;
   onRespond: (choice: ApprovalChoice) => void;
 }) {
   const r = props.request;
+  const patternOffered = r.options.includes("按命令模式始终允许");
+  // 模式预览：与审批门 derivePattern 同规则（命令头 + ` *`），仅展示用
+  const command =
+    r.tool === "bash" && typeof r.args.command === "string"
+      ? r.args.command
+      : "";
+  const patternPreview = command
+    ? `${command.trim().split(/\s+/)[0] ?? ""} *`
+    : "";
   return (
     <div className="approval-card" data-testid="approval-card" data-tool={r.tool}>
       <div className="approval-head">
@@ -603,6 +613,16 @@ export function ApprovalCard(props: {
         >
           本会话始终允许
         </button>
+        {patternOffered && (
+          <button
+            type="button"
+            data-testid="approval-allow-pattern"
+            onClick={() => props.onRespond("pattern")}
+            title={`把模式 ${patternPreview} 持久加入允许清单：同命令头的非危险命令今后免问（危险命令永不豁免）`}
+          >
+            按模式始终允许（{patternPreview}）
+          </button>
+        )}
         <button
           type="button"
           data-testid="approval-deny"

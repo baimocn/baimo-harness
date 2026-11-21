@@ -5,7 +5,9 @@
  * - 计划（plan）：写类一律 block（write/edit/变更型 bash/危险命令），
  *   并 notify 显形；只读工具与只读 bash 放行（计划模式仍可调研）。
  * - 编辑（edit）：写类弹审批（宿主界面审批卡裁决）；已授「本会话始终
- *   允许」的工具免问；危险命令独立清单永远要问（授权不豁免）。
+ *   允许」的工具免问；非危险 bash 还可授第三级「按命令模式始终允许」
+ *   （D-01：命令头前缀规则如 `cargo *`，落盘 patternGrants）；危险命令
+ *   独立清单永远要问（任何授权都不豁免）。
  * - 构建（build）：普通写类放行；危险命令弹审批。
  * - YOLO（yolo）：全部放行（预算熔断在后续块，策略文件预留字段）。
  *
@@ -27,6 +29,8 @@ const FALLBACK_MODE = process.env.BAIMO_APPROVAL_DEFAULT_MODE ?? "edit";
 
 export const OPT_ALLOW_ONCE = "允许一次";
 export const OPT_ALLOW_SESSION = "本会话始终允许";
+/** D-01 第三级：按命令模式持久允许（如 `cargo *` 前缀规则），仅非危险 bash 可选。 */
+export const OPT_ALLOW_PATTERN = "按命令模式始终允许";
 export const OPT_DENY = "拒绝";
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -83,13 +87,54 @@ function loadPolicy() {
       return {
         mode: typeof parsed?.mode === "string" ? parsed.mode : FALLBACK_MODE,
         grants: Array.isArray(parsed?.grants) ? parsed.grants : [],
+        patternGrants: Array.isArray(parsed?.patternGrants)
+          ? parsed.patternGrants.filter(
+              (g) =>
+                g &&
+                typeof g.tool === "string" &&
+                typeof g.pattern === "string",
+            )
+          : [],
         raw: parsed ?? {},
       };
     } catch {
       /* 落到 fail-closed 缺省 */
     }
   }
-  return { mode: FALLBACK_MODE, grants: [], raw: {} };
+  return { mode: FALLBACK_MODE, grants: [], patternGrants: [], raw: {} };
+}
+
+/** 命令模式匹配：以 * 结尾 = 前缀匹配（如 `cargo *`）；否则全等。 */
+function matchesPattern(pattern, command) {
+  if (pattern.endsWith("*")) return command.startsWith(pattern.slice(0, -1));
+  return command === pattern;
+}
+
+/** 由一条命令派生模式：取命令头 + ` *`（PRD 的 `cargo *` 形态）。 */
+function derivePattern(command) {
+  const first = command.trim().split(/\s+/)[0] ?? "";
+  return first ? `${first} *` : command;
+}
+
+function persistPatternGrant(tool, pattern) {
+  if (!POLICY_FILE) return;
+  try {
+    const { patternGrants, raw } = loadPolicy();
+    if (patternGrants.some((g) => g.tool === tool && g.pattern === pattern)) {
+      return;
+    }
+    writeFileSync(
+      POLICY_FILE,
+      JSON.stringify(
+        { ...raw, patternGrants: [...patternGrants, { tool, pattern }] },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    /* 落盘失败不挡本次放行；下次同类调用会重新询问 */
+  }
 }
 
 function persistGrant(tool) {
@@ -150,6 +195,17 @@ export default function (pi) {
     const needsAsk = danger || mode === "edit";
     if (!needsAsk) return undefined;
     if (!danger && policy.grants.includes(tool)) return undefined;
+    // D-01 第三级：命令模式持久允许（仅非危险 bash；危险命令永不豁免，
+    // 上面的 danger 分支与本检查的 !danger 守卫共同保证）
+    if (
+      !danger &&
+      isBash &&
+      policy.patternGrants.some(
+        (g) => g.tool === tool && matchesPattern(g.pattern, command),
+      )
+    ) {
+      return undefined;
+    }
 
     const reason = danger
       ? "命中危险命令清单（任何模式下二次确认）"
@@ -162,14 +218,20 @@ export default function (pi) {
       mode,
       reason,
     });
-    const choice = await ctx.ui.select(
-      payload,
-      [OPT_ALLOW_ONCE, OPT_ALLOW_SESSION, OPT_DENY],
-      { timeout: APPROVAL_TIMEOUT_MS },
-    );
+    const options =
+      isBash && !danger
+        ? [OPT_ALLOW_ONCE, OPT_ALLOW_SESSION, OPT_ALLOW_PATTERN, OPT_DENY]
+        : [OPT_ALLOW_ONCE, OPT_ALLOW_SESSION, OPT_DENY];
+    const choice = await ctx.ui.select(payload, options, {
+      timeout: APPROVAL_TIMEOUT_MS,
+    });
     if (choice === OPT_ALLOW_ONCE) return undefined;
     if (choice === OPT_ALLOW_SESSION) {
       persistGrant(tool);
+      return undefined;
+    }
+    if (choice === OPT_ALLOW_PATTERN && isBash && !danger) {
+      persistPatternGrant(tool, derivePattern(command));
       return undefined;
     }
     const why =

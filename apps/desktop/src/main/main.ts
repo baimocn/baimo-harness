@@ -222,10 +222,11 @@ function autoSnapshot(
 
 const approvalDir = join(dataDir, "approval");
 
-/** 审批卡三档裁决 → 扩展 select 的选项原文（与 approval-gate.mjs 保持一致）。 */
+/** 审批卡裁决 → 扩展 select 的选项原文（与 approval-gate.mjs 保持一致）。 */
 const APPROVAL_CHOICE_VALUES = {
   once: "允许一次",
   session: "本会话始终允许",
+  pattern: "按命令模式始终允许",
   deny: "拒绝",
 } as const;
 
@@ -251,24 +252,38 @@ function policyFileFor(sessionId: string): string {
   return join(approvalDir, `${approvalKeyFor(sessionId)}.json`);
 }
 
-/** 写/刷新某会话的策略文件：模式取最新设置，grants 保留扩展已落盘的授权。 */
+/** 写/刷新某会话的策略文件：模式取最新设置，grants 与 patternGrants 保留扩展已落盘的授权。 */
 function writePolicy(sessionId: string): string {
   mkdirSync(approvalDir, { recursive: true });
   const file = policyFileFor(sessionId);
   let grants: string[] = [];
+  let patternGrants: Array<{ tool: string; pattern: string }> = [];
   try {
     const prev = JSON.parse(readFileSync(file, "utf8")) as {
       grants?: unknown;
+      patternGrants?: unknown;
     };
     if (Array.isArray(prev?.grants)) {
       grants = prev.grants.filter((g): g is string => typeof g === "string");
+    }
+    if (Array.isArray(prev?.patternGrants)) {
+      patternGrants = prev.patternGrants.filter(
+        (g): g is { tool: string; pattern: string } =>
+          !!g &&
+          typeof (g as { tool?: unknown }).tool === "string" &&
+          typeof (g as { pattern?: unknown }).pattern === "string",
+      );
     }
   } catch {
     /* 首次写或文件损坏：从空授权开始（fail-closed，写类会重新询问） */
   }
   writeFileSync(
     file,
-    JSON.stringify({ mode: effectiveMode(sessionId), grants }, null, 2) + "\n",
+    JSON.stringify(
+      { mode: effectiveMode(sessionId), grants, patternGrants },
+      null,
+      2,
+    ) + "\n",
     "utf8",
   );
   return file;
@@ -281,7 +296,7 @@ function prepareGate(mode: PermissionMode): { key: string; policyFile: string } 
   const policyFile = join(approvalDir, `${key}.json`);
   writeFileSync(
     policyFile,
-    JSON.stringify({ mode, grants: [] }, null, 2) + "\n",
+    JSON.stringify({ mode, grants: [], patternGrants: [] }, null, 2) + "\n",
     "utf8",
   );
   return { key, policyFile };
@@ -569,6 +584,9 @@ function routeExtensionUi(
           danger: payload.danger === true,
           mode: String(payload.mode ?? ""),
           reason: String(payload.reason ?? ""),
+          options: Array.isArray(record.options)
+            ? record.options.map(String)
+            : [],
         };
         send("approval:requested", dto);
         return;
