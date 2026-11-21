@@ -182,6 +182,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .ledger-section label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
 .ledger-section input[type="number"] { width: 110px; background: #101216; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
 .ledger-entry { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed var(--border); }
+.global-notice { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 12px; color: var(--err); background: rgba(255, 80, 80, 0.1); border-bottom: 1px solid var(--border); font-size: 12px; }
+
 /* 闲时队列（M-14）与插件目录（M-15） */
 .idle-head { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .idle-halted { margin: 0; padding: 8px 10px; color: var(--err); background: rgba(255, 80, 80, 0.08); font-size: 12px; border-bottom: 1px solid var(--border); }

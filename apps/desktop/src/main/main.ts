@@ -306,12 +306,17 @@ function prepareGate(mode: PermissionMode): { key: string; policyFile: string } 
 }
 
 function gatePiArgs(): string[] {
-  return [
+  const args = [
     "--extension",
     approvalGateExtensionPath(),
     "--extension",
     planGateExtensionPath(),
   ];
+  // M-15：已启用插件随会话进程一并加载（启停只对新建/续接生效，进行中不变）
+  for (const pluginPath of host.plugins.enabledExtensionPaths()) {
+    args.push("--extension", pluginPath);
+  }
+  return args;
 }
 
 /* ---------- M-03 计划：状态/策略文件与扩展挂载 ---------- */
@@ -651,6 +656,28 @@ const MILESTONE_LABELS: Record<string, string> = {
 };
 
 /**
+ * 把 PiProcessError 的 stderr 尾巴压进 message：插件加载失败时
+ * 「Failed to load extension "<路径>": <原因>」只在 stderr 里，
+ * 跨 IPC 只传 message——不压进去，界面就看不到是哪个插件坏了（K-01）。
+ */
+function flattenProcessError(err: unknown): Error {
+  const e = err as { message?: string; stderrTail?: string };
+  const tail = (e?.stderrTail ?? "")
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(-2)
+    .join(" ")
+    .slice(0, 400);
+  const message = e?.message ?? String(err);
+  if (tail && !message.includes(tail)) {
+    return new Error(`${message}｜${tail}`);
+  }
+  return err instanceof Error ? err : new Error(message);
+}
+
+/**
  * 新建一个 live 会话（挂审批门/计划门/已启用插件，走完整机制）。
  * activate=false 时不抢用户当前焦点（闲时队列在后台建会话用）。
  */
@@ -678,6 +705,8 @@ async function createLiveSession(
       BAIMO_PLAN_POLICY: plan.policyFile,
     },
     modelRef: model,
+  }).catch((err) => {
+    throw flattenProcessError(err);
   });
   live.set(handle.id, handle);
   wireHandle(handle);
@@ -725,6 +754,8 @@ async function ensureLiveSession(
       BAIMO_PLAN_STATE: planStateFileFor(id),
       BAIMO_PLAN_POLICY: planPolicyFile,
     },
+  }).catch((err) => {
+    throw flattenProcessError(err);
   });
   live.set(handle.id, handle);
   wireHandle(handle);
@@ -922,6 +953,27 @@ function registerIpc(): void {
     const removed = idleRunner.clearFinished();
     return { ok: true, removed };
   });
+
+  /* ---------- 插件目录（M-15） ---------- */
+
+  ipcMain.handle("plugins:list", () => host.plugins.list());
+
+  ipcMain.handle(
+    "plugins:set-enabled",
+    (_e, fileName: string, enabled: boolean) => {
+      try {
+        host.plugins.setEnabled(fileName, enabled);
+        const list = host.plugins.list();
+        send("plugins:changed", list);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
 
   ipcMain.handle("session:abort", async (_e, id: string) => {
     const handle = live.get(id);

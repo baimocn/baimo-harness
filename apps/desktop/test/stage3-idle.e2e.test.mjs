@@ -43,7 +43,15 @@ async function launchApp(env) {
   const page = await app.firstWindow();
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));
-  await page.waitForSelector('[data-testid="statusbar"]', { timeout: 30_000 });
+  try {
+    // 全套件并行启动多个 Electron 时 1.5 核 CPU 争抢严重，首屏等待放宽；
+    // 失败必须关掉应用，否则泄漏的进程会把整个套件挂死（实测教训）。
+    await page.waitForSelector('[data-testid="statusbar"]', { timeout: 90_000 });
+  } catch (err) {
+    await app.close().catch(() => undefined);
+    cleanup(configHome);
+    throw err;
+  }
   return { app, page, pageErrors, configHome };
 }
 

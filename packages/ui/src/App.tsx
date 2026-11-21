@@ -78,6 +78,8 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const [costView, setCostView] = useState<CostViewDto | null>(null);
   const [idleView, setIdleView] = useState<IdleQueueViewDto | null>(null);
   const [plugins, setPlugins] = useState<PluginInfoDto[] | null>(null);
+  /** 无会话上下文的失败显形（如新建会话时插件加载失败，报错点名插件）。 */
+  const [globalNotice, setGlobalNotice] = useState<string | null>(null);
   /** 已把「投递」呈现为执行流用户消息的条目 id（防实时推送与回放双份）。 */
   const deliveredInjectedRef = useRef<Map<string, Set<string>>>(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
@@ -358,14 +360,21 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   };
 
   const handleNew = async () => {
-    const meta = await bridge.createSession();
-    await refreshSnapshot();
-    setStreams((prev) => new Map(prev).set(meta.id, initialStreamState));
-    setCheckpointsMap((prev) => new Map(prev).set(meta.id, []));
-    setActiveId(meta.id);
-    loadPlan(meta.id).catch(() => undefined);
-    loadQueue(meta.id).catch(() => undefined);
-    loadCost(meta.id).catch(() => undefined);
+    try {
+      const meta = await bridge.createSession();
+      await refreshSnapshot();
+      setStreams((prev) => new Map(prev).set(meta.id, initialStreamState));
+      setCheckpointsMap((prev) => new Map(prev).set(meta.id, []));
+      setActiveId(meta.id);
+      loadPlan(meta.id).catch(() => undefined);
+      loadQueue(meta.id).catch(() => undefined);
+      loadCost(meta.id).catch(() => undefined);
+    } catch (err) {
+      // 会话没建成就没有执行流可写：用全局提示条显形（如插件加载失败会点名插件与原因）
+      setGlobalNotice(
+        `新建会话失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   };
 
   const handleSavePricing = async (modelKey: string, price: ModelPriceDto) => {
@@ -716,6 +725,14 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
             : null
         }
       />
+      {globalNotice && (
+        <div className="global-notice" data-testid="global-notice">
+          <span>{globalNotice}</span>
+          <button type="button" onClick={() => setGlobalNotice(null)}>
+            知道了
+          </button>
+        </div>
+      )}
       <div className="main-row">
         <SessionList
           sessions={snapshot.sessions}

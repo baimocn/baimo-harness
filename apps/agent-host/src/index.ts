@@ -6,4 +6,5 @@ export * from "./session-store.js";
 export * from "./steering-store.js";
 export * from "./idle-queue-store.js";
 export * from "./idle-queue.js";
+export * from "./plugin-service.js";
 export * from "./agent-host.js";

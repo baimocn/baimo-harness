@@ -44,6 +44,7 @@ import {
   type SteeringKind,
 } from "./steering-store.js";
 import { IdleQueueStore } from "./idle-queue-store.js";
+import { PluginService } from "./plugin-service.js";
 
 /** 从 Pi 消息 content（string 或 [{type:"text",text}...]）抽纯文本。 */
 function extractMessageText(content: unknown): string {
@@ -823,6 +824,8 @@ export class AgentHost extends EventEmitter {
   readonly costLedger: CostLedger;
   /** 闲时队列落盘（M-14）：<dataDir>/idle-queue/queue.json。调度器由调用方按需构造并显式启动（D-01）。 */
   readonly idleQueueStore: IdleQueueStore;
+  /** 插件目录（M-15）：<dataDir>/plugins/ 扫描 + 启停注册表 + 静态校验。 */
+  readonly plugins: PluginService;
   private readonly sessions = new Map<string, SessionHandle>();
   private started = false;
 
@@ -834,6 +837,7 @@ export class AgentHost extends EventEmitter {
     this.steeringStore = new SteeringStore(this.config.dataDir);
     this.costLedger = new CostLedger(join(this.config.dataDir, "cost"));
     this.idleQueueStore = new IdleQueueStore(this.config.dataDir);
+    this.plugins = new PluginService(this.config.dataDir);
   }
 
   /** 启动宿主：校验 Pi 设置（K-03）、准备数据目录与索引。 */
