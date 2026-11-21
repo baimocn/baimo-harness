@@ -7,6 +7,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  ApprovalChoice,
+  ApprovalRequestDto,
   BaimoBridge,
   CheckpointDto,
   HostSnapshotDto,
@@ -15,6 +17,7 @@ import type {
   SessionStatsDto,
 } from "./bridge.js";
 import {
+  ApprovalCard,
   Composer,
   RightPanel,
   SessionList,
@@ -42,6 +45,9 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   );
   const [checkpointsMap, setCheckpointsMap] = useState<
     Map<string, CheckpointDto[]>
+  >(new Map());
+  const [pendingApprovals, setPendingApprovals] = useState<
+    Map<string, ApprovalRequestDto>
   >(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<RightTab>("changes");
@@ -134,6 +140,16 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         tone: "error",
       });
     });
+    const offApproval = bridge.onApprovalRequested((e) => {
+      setPendingApprovals((prev) => new Map(prev).set(e.sessionId, e));
+    });
+    const offApprovalNotice = bridge.onApprovalNotice((e) => {
+      updateStream(e.sessionId, {
+        type: "notice",
+        label: e.message,
+        tone: e.notifyType === "error" ? "error" : "info",
+      });
+    });
     const offStats = bridge.onStats((e) =>
       setStatsMap((prev) => new Map(prev).set(e.sessionId, e.stats)),
     );
@@ -149,6 +165,8 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       offExit();
       offCkpt();
       offCkptErr();
+      offApproval();
+      offApprovalNotice();
     };
   }, [bridge, loadCheckpoints, loadHistory, refreshSnapshot, updateStream]);
 
@@ -316,6 +334,30 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     loadCheckpoints(activeId).catch(() => undefined);
   };
 
+  /** 审批裁决：回注主进程 → extension_ui_response；卡片随即撤下，结果以工具卡/提示显形。 */
+  const handleApprovalRespond = async (choice: ApprovalChoice) => {
+    if (!activeId) return;
+    const req = pendingApprovals.get(activeId);
+    if (!req) return;
+    const res = await bridge.respondApproval(activeId, req.requestId, choice);
+    if (!res.ok) {
+      notice(activeId, `审批裁决发送失败：${res.error ?? "未知错误"}`, "error");
+      return;
+    }
+    setPendingApprovals((prev) => {
+      const next = new Map(prev);
+      next.delete(activeId);
+      return next;
+    });
+    const label =
+      choice === "once"
+        ? "允许一次"
+        : choice === "session"
+          ? "本会话始终允许"
+          : "拒绝";
+    notice(activeId, `审批裁决：${req.tool} → ${label}`);
+  };
+
   const handleTrashConfirm = async () => {
     if (!confirmDelete) return;
     const target = confirmDelete;
@@ -392,6 +434,12 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
             </div>
           )}
           <StreamView state={activeStream ?? initialStreamState} onDiffMark={handleDiffMark} />
+          {activeId && pendingApprovals.get(activeId) && (
+            <ApprovalCard
+              request={pendingApprovals.get(activeId)!}
+              onRespond={handleApprovalRespond}
+            />
+          )}
           <Composer
             canSend={canSend}
             running={running}

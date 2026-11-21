@@ -4,8 +4,12 @@
  * 职责：
  * - 启动时构造 AgentHost（数据目录、桩模型模式、HOME 隔离都走 env，便于无头 E2E 复现）；
  * - 把门面能力收敛成一组白名单 IPC：渲染层只能经 preload 桥调用这里注册的通道；
- * - 壳层自有状态落盘：权限模式与模型选择（desktop-settings.json，M-02 本块仅记录）、
+ * - 壳层自有状态落盘：权限模式与模型选择（desktop-settings.json，M-02）、
  *   回收站标记（desktop-trash.json，M-01 本块实现：删除确认 + 回收站标记，不销毁落盘数据）；
+ * - M-02 审批：每个会话进程挂审批门扩展（agent-host 随附），策略文件在
+ *   数据目录 approval/ 下按会话一份（模式 + 本会话授权，扩展逐次现读）；
+ *   扩展的审批请求（extension_ui_request）由 wireHandle 拦截转成审批卡
+ *   事件推给渲染层，裁决经 approval:respond 回注 extension_ui_response。
  * - 退出时先关宿主（子进程逐级优雅退出）再退应用，不留孤儿 Pi 进程。
  */
 import { app, BrowserWindow, ipcMain } from "electron";
@@ -15,10 +19,12 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AgentHost,
+  approvalGateExtensionPath,
   type SessionHandle,
   type SessionMeta,
 } from "@baimo-harness/agent-host";
@@ -28,6 +34,7 @@ import {
   type RollbackReport,
 } from "@baimo-harness/core";
 import type {
+  ApprovalRequestDto,
   CheckpointDto,
   HostSnapshotDto,
   MilestoneDto,
@@ -44,12 +51,15 @@ const STUB_REF = { provider: "stub", modelId: "stub-model" };
 interface DesktopSettings {
   permissionMode: PermissionMode;
   perSessionMode: Record<string, PermissionMode>;
+  /** 会话 → 审批策略文件 key（策略文件在 approval/<key>.json，含本会话授权）。 */
+  approvalKeys: Record<string, string>;
   selectedModel: { provider: string; modelId: string } | null;
 }
 
 const DEFAULT_SETTINGS: DesktopSettings = {
   permissionMode: "build",
   perSessionMode: {},
+  approvalKeys: {},
   selectedModel: null,
 };
 
@@ -194,6 +204,79 @@ function autoSnapshot(
   }
 }
 
+/* ---------- M-02 审批：策略文件与扩展挂载 ---------- */
+
+const approvalDir = join(dataDir, "approval");
+
+/** 审批卡三档裁决 → 扩展 select 的选项原文（与 approval-gate.mjs 保持一致）。 */
+const APPROVAL_CHOICE_VALUES = {
+  once: "允许一次",
+  session: "本会话始终允许",
+  deny: "拒绝",
+} as const;
+
+function effectiveMode(sessionId?: string): PermissionMode {
+  return (
+    (sessionId ? settings.value.perSessionMode[sessionId] : undefined) ??
+    settings.value.permissionMode
+  );
+}
+
+function approvalKeyFor(sessionId: string): string {
+  let key = settings.value.approvalKeys[sessionId];
+  if (!key) {
+    key = randomUUID();
+    settings.update({
+      approvalKeys: { ...settings.value.approvalKeys, [sessionId]: key },
+    });
+  }
+  return key;
+}
+
+function policyFileFor(sessionId: string): string {
+  return join(approvalDir, `${approvalKeyFor(sessionId)}.json`);
+}
+
+/** 写/刷新某会话的策略文件：模式取最新设置，grants 保留扩展已落盘的授权。 */
+function writePolicy(sessionId: string): string {
+  mkdirSync(approvalDir, { recursive: true });
+  const file = policyFileFor(sessionId);
+  let grants: string[] = [];
+  try {
+    const prev = JSON.parse(readFileSync(file, "utf8")) as {
+      grants?: unknown;
+    };
+    if (Array.isArray(prev?.grants)) {
+      grants = prev.grants.filter((g): g is string => typeof g === "string");
+    }
+  } catch {
+    /* 首次写或文件损坏：从空授权开始（fail-closed，写类会重新询问） */
+  }
+  writeFileSync(
+    file,
+    JSON.stringify({ mode: effectiveMode(sessionId), grants }, null, 2) + "\n",
+    "utf8",
+  );
+  return file;
+}
+
+/** 新会话在拿到宿主 id 之前先备好策略文件，返回 key 与文件路径。 */
+function prepareGate(mode: PermissionMode): { key: string; policyFile: string } {
+  mkdirSync(approvalDir, { recursive: true });
+  const key = randomUUID();
+  const policyFile = join(approvalDir, `${key}.json`);
+  writeFileSync(
+    policyFile,
+    JSON.stringify({ mode, grants: [] }, null, 2) + "\n",
+    "utf8",
+  );
+  return { key, policyFile };
+}
+
+function gatePiArgs(): string[] {
+  return ["--extension", approvalGateExtensionPath()];
+}
+
 const live = new Map<string, SessionHandle>();
 let activeSessionId: string | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -253,8 +336,74 @@ async function pushStats(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * 扩展 UI 记录路由（M-02）：审批门的 select 请求转成审批卡事件推给渲染层；
+ * notify 转成成条提示；其余对话框类请求（非审批门来源）明确取消并显形，
+ * 绝不让 Pi 挂死等待；fire-and-forget 类（setStatus 等）放行不管。
+ */
+function routeExtensionUi(
+  handle: SessionHandle,
+  record: Record<string, unknown>,
+): void {
+  const method = String(record.method ?? "");
+  if (method === "notify") {
+    send("approval:notice", {
+      sessionId: handle.id,
+      message: String(record.message ?? ""),
+      notifyType: String(record.notifyType ?? "info"),
+    });
+    return;
+  }
+  if (method === "select") {
+    try {
+      const payload = JSON.parse(String(record.title ?? "")) as {
+        baimoApproval?: unknown;
+        tool?: unknown;
+        args?: unknown;
+        danger?: unknown;
+        mode?: unknown;
+        reason?: unknown;
+      };
+      if (payload?.baimoApproval === 1) {
+        const dto: ApprovalRequestDto = {
+          sessionId: handle.id,
+          requestId: String(record.id),
+          tool: String(payload.tool ?? ""),
+          args:
+            payload.args && typeof payload.args === "object"
+              ? (payload.args as Record<string, unknown>)
+              : {},
+          danger: payload.danger === true,
+          mode: String(payload.mode ?? ""),
+          reason: String(payload.reason ?? ""),
+        };
+        send("approval:requested", dto);
+        return;
+      }
+    } catch {
+      /* 标题不是审批载荷：落到下面的通用兜底 */
+    }
+  }
+  if (
+    method === "select" ||
+    method === "confirm" ||
+    method === "input" ||
+    method === "editor"
+  ) {
+    handle.respondExtensionUi(String(record.id), { cancelled: true });
+    send("approval:notice", {
+      sessionId: handle.id,
+      message: `未处理的扩展对话框请求已取消（method=${method}）`,
+      notifyType: "warning",
+    });
+  }
+}
+
 function wireHandle(handle: SessionHandle): void {
   handle.on("event", (record) => {
+    if ((record as { type?: unknown }).type === "extension_ui_request") {
+      routeExtensionUi(handle, record as Record<string, unknown>);
+    }
     send("session:event", { sessionId: handle.id, record });
   });
   handle.on("processExit", (info) => {
@@ -284,22 +433,31 @@ function registerIpc(): void {
 
   ipcMain.handle("session:create", async (_e, title?: string) => {
     const model = selectedModel();
+    // M-02：先备策略文件（模式=当前全局模式），进程挂审批门扩展
+    const gate = prepareGate(settings.value.permissionMode);
     const handle = await host.openSession({
       title: title ?? `新会话 ${new Date().toLocaleTimeString()}`,
       workspaceDir,
-      piArgs: model
-        ? ["--provider", model.provider, "--model", model.modelId]
-        : [],
+      piArgs: [
+        ...(model
+          ? ["--provider", model.provider, "--model", model.modelId]
+          : []),
+        ...gatePiArgs(),
+      ],
+      env: { BAIMO_APPROVAL_POLICY: gate.policyFile },
       modelRef: model,
     });
     live.set(handle.id, handle);
     wireHandle(handle);
     activeSessionId = handle.id;
-    // 权限模式随会话记录（本块仅记录，审批拦截下一块）
     settings.update({
       perSessionMode: {
         ...settings.value.perSessionMode,
         [handle.id]: settings.value.permissionMode,
+      },
+      approvalKeys: {
+        ...settings.value.approvalKeys,
+        [handle.id]: gate.key,
       },
     });
     return toDto(handle.meta);
@@ -370,10 +528,16 @@ function registerIpc(): void {
     const meta = host.listSessions().find((m) => m.id === id);
     if (!meta) throw new Error(`未知会话: ${id}`);
     const model = meta.modelRef ?? selectedModel();
+    // M-02：续接同样挂审批门；策略文件按会话 key 找回（授权跨续接保留）
+    const policyFile = writePolicy(id);
     const handle = await host.resumeSession(id, {
-      piArgs: model
-        ? ["--provider", model.provider, "--model", model.modelId]
-        : [],
+      piArgs: [
+        ...(model
+          ? ["--provider", model.provider, "--model", model.modelId]
+          : []),
+        ...gatePiArgs(),
+      ],
+      env: { BAIMO_APPROVAL_POLICY: policyFile },
     });
     live.set(handle.id, handle);
     wireHandle(handle);
@@ -423,7 +587,44 @@ function registerIpc(): void {
           ? { ...settings.value.perSessionMode, [sessionId]: mode }
           : settings.value.perSessionMode,
       });
+      // M-02：模式变更经策略文件即时生效（扩展逐次工具调用现读，含运行中会话）
+      if (sessionId) {
+        writePolicy(sessionId);
+        if (mode === "yolo") {
+          // M-06：YOLO 开启前强制留一张快照（失败显形，不静默放行）
+          try {
+            const { created } = checkpoints.createSnapshot(
+              sessionId,
+              sessionWorkspace(sessionId),
+              { label: "YOLO 开启前快照", trigger: "yolo_start" },
+            );
+            if (created) send("checkpoint:changed", { sessionId });
+          } catch (err) {
+            send("checkpoint:error", {
+              sessionId,
+              message: `YOLO 开启前快照失败：${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        }
+      }
       return { mode };
+    },
+  );
+
+  ipcMain.handle(
+    "approval:respond",
+    (
+      _e,
+      sessionId: string,
+      requestId: string,
+      choice: keyof typeof APPROVAL_CHOICE_VALUES,
+    ) => {
+      const handle = live.get(sessionId);
+      if (!handle) return { ok: false, error: "会话未在运行" };
+      const value = APPROVAL_CHOICE_VALUES[choice];
+      if (!value) return { ok: false, error: `未知裁决: ${String(choice)}` };
+      handle.respondExtensionUi(requestId, { value });
+      return { ok: true };
     },
   );
 

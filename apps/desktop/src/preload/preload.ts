@@ -6,6 +6,7 @@
  */
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ApprovalRequestDto,
   BaimoBridge,
   CheckpointDto,
   PermissionMode,
@@ -41,6 +42,13 @@ const api: BaimoBridge = {
     ipcRenderer.invoke("mode:set", mode, sessionId),
   setModel: (model: { provider: string; modelId: string }) =>
     ipcRenderer.invoke("model:set", model),
+  respondApproval: (sessionId: string, requestId: string, choice: string) =>
+    ipcRenderer.invoke("approval:respond", sessionId, requestId, choice),
+  onApprovalRequested: (cb: (e: ApprovalRequestDto) => void) =>
+    subscribe("approval:requested", cb),
+  onApprovalNotice: (
+    cb: (e: { sessionId: string; message: string; notifyType: string }) => void,
+  ) => subscribe("approval:notice", cb),
   stats: (id: string) => ipcRenderer.invoke("session:stats", id),
   listCheckpoints: (id: string) => ipcRenderer.invoke("checkpoint:list", id),
   createCheckpoint: (id: string) => ipcRenderer.invoke("checkpoint:create", id),

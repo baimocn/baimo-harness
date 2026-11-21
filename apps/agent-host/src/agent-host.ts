@@ -42,11 +42,23 @@ export function defaultPiCliPath(): string {
   );
 }
 
+/**
+ * 随附的审批门扩展（M-02）：apps/agent-host/extensions/approval-gate.mjs。
+ * 壳层以 --extension 挂到每个会话进程；策略经 BAIMO_APPROVAL_POLICY 指向的
+ * JSON 文件逐次工具调用现读（模式热切换、本会话授权落盘都在这个文件里）。
+ */
+export function approvalGateExtensionPath(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, "..", "extensions", "approval-gate.mjs");
+}
+
 export interface OpenSessionOptions {
   title?: string;
   workspaceDir?: string;
   /** 本会话追加的 Pi CLI 参数（在宿主配置 extraPiArgs 之后）。 */
   piArgs?: string[];
+  /** 本会话追加的环境变量（与宿主级 env 合并，本会话优先）。 */
+  env?: Record<string, string>;
   modelRef?: { provider: string; modelId: string } | null;
 }
 
@@ -125,6 +137,29 @@ export class SessionHandle extends EventEmitter {
 
   get busy(): boolean {
     return this.run !== null;
+  }
+
+  /**
+   * 回复一条扩展 UI 请求（extension_ui_response）：对话框类方法（select/
+   * confirm/input/editor）的裁决通道，无响应回执（协议即如此）。
+   * fields 形如 { value } / { confirmed } / { cancelled: true }。
+   */
+  respondExtensionUi(
+    requestId: string,
+    fields: Record<string, unknown>,
+  ): void {
+    this.store.append(this.id, "lifecycle", {
+      event: "extension_ui_responded",
+      requestId,
+      fields,
+    });
+    this.client.sendRaw(
+      JSON.stringify({
+        type: "extension_ui_response",
+        id: requestId,
+        ...fields,
+      }),
+    );
   }
 
   /** 透传一条 RPC 命令；失败以类型化错误抛出（K-01）。 */
@@ -357,7 +392,7 @@ export class AgentHost extends EventEmitter {
       modelRef: opts.modelRef ?? null,
     });
     this.store.append(meta.id, "lifecycle", { event: "session_opened" });
-    return this.attachProcess(meta, opts.piArgs ?? [], "session_opened");
+    return this.attachProcess(meta, opts.piArgs ?? [], "session_opened", opts.env);
   }
 
   /**
@@ -368,7 +403,7 @@ export class AgentHost extends EventEmitter {
    */
   async resumeSession(
     sessionId: string,
-    opts: { piArgs?: string[] } = {},
+    opts: { piArgs?: string[]; env?: Record<string, string> } = {},
   ): Promise<SessionHandle> {
     if (!this.started) await this.start();
     const existing = this.sessions.get(sessionId);
@@ -386,6 +421,7 @@ export class AgentHost extends EventEmitter {
       meta,
       ["--session", meta.piSessionFile, ...(opts.piArgs ?? [])],
       "session_resumed",
+      opts.env,
     );
   }
 
@@ -394,6 +430,7 @@ export class AgentHost extends EventEmitter {
     meta: SessionMeta,
     extraArgs: string[],
     lifecycleEvent: string,
+    sessionEnv?: Record<string, string>,
   ): Promise<SessionHandle> {
     let proc: PiProcess;
     try {
@@ -402,7 +439,7 @@ export class AgentHost extends EventEmitter {
         cwd: meta.workspaceDir,
         agentDir: this.config.piAgentDir,
         offline: this.config.offline,
-        env: this.config.env,
+        env: { ...this.config.env, ...(sessionEnv ?? {}) },
         args: [
           "--session-dir",
           this.piSessionDir(meta.id),

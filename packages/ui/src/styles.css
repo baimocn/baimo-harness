@@ -92,6 +92,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .readonly-banner { background: #33301f; color: #e8d98a; padding: 5px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .btn-stop { border-color: var(--err); color: var(--err); }
+.approval-card { border: 1px solid var(--warn, #b58900); border-left: 4px solid var(--warn, #b58900); background: var(--panel2); margin: 8px 12px; padding: 10px 12px; }
+.approval-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.badge-danger { color: var(--err); border: 1px solid var(--err); padding: 0 6px; font-size: 12px; }
+.approval-args { max-height: 180px; overflow: auto; background: var(--bg); border: 1px solid var(--border); padding: 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.approval-actions { display: flex; gap: 8px; }
+.btn-danger { border-color: var(--err); color: var(--err); }
 .checkpoint-head { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; }
 .checkpoint-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-top: 1px solid var(--border); }
 .checkpoint-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }

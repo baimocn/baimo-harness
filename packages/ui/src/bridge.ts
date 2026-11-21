@@ -82,6 +82,23 @@ export interface RollbackReportDto {
   mismatches: string[];
 }
 
+export interface ApprovalRequestDto {
+  sessionId: string;
+  requestId: string;
+  /** 工具名（write/edit/bash/…）。 */
+  tool: string;
+  /** 工具全参数（审批卡原样展示，禁止盲签）。 */
+  args: Record<string, unknown>;
+  /** 是否命中危险命令清单。 */
+  danger: boolean;
+  /** 发起审批时的权限模式。 */
+  mode: string;
+  /** 理由位：为什么这次要审批（命中危险清单 / 编辑模式写操作）。 */
+  reason: string;
+}
+
+export type ApprovalChoice = "once" | "session" | "deny";
+
 export interface HostSnapshotDto {
   /** 随附 Pi 版本（读自 runtime 钉版包，读不到为「未知」）。 */
   kernelVersion: string;
@@ -142,11 +159,21 @@ export interface BaimoBridge {
   closeSession(id: string): Promise<void>;
   trashSession(id: string): Promise<void>;
   restoreSession(id: string): Promise<void>;
-  /** 权限模式：本块只做状态与传递（记录到壳层设置），审批拦截下一块接入。 */
+  /** 权限模式：落盘到壳层设置，并经策略文件即时下发到会话的审批门扩展。 */
   setMode(
     mode: PermissionMode,
     sessionId?: string,
   ): Promise<{ mode: PermissionMode }>;
+  /** 审批裁决回注：主进程翻译成 extension_ui_response 交给 Pi 里的审批门。 */
+  respondApproval(
+    sessionId: string,
+    requestId: string,
+    choice: ApprovalChoice,
+  ): Promise<{ ok: boolean; error?: string }>;
+  onApprovalRequested(cb: (e: ApprovalRequestDto) => void): () => void;
+  onApprovalNotice(
+    cb: (e: { sessionId: string; message: string; notifyType: string }) => void,
+  ): () => void;
   setModel(model: ModelRefDto): Promise<{ selectedModel: ModelRefDto }>;
   stats(id: string): Promise<SessionStatsDto | null>;
   /** 检查点列表（M-06，真实快照数据，来自宿主数据目录）。 */

@@ -5,6 +5,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import {
   PERMISSION_MODES,
+  type ApprovalChoice,
+  type ApprovalRequestDto,
   type CheckpointDto,
   type HostSnapshotDto,
   type PermissionMode,
@@ -360,6 +362,56 @@ export function StreamView(props: {
 /* ---------------- 右栏 ---------------- */
 
 export type RightTab = "changes" | "files" | "checkpoints" | "plan";
+
+/**
+ * 审批卡（M-02）：写类工具被审批门截停时出现，Pi 在裁决前不会执行。
+ * 展示工具名 + 全参数 + 理由位（禁止盲签），三档裁决：
+ * 允许一次 / 本会话始终允许 / 拒绝。
+ */
+export function ApprovalCard(props: {
+  request: ApprovalRequestDto;
+  onRespond: (choice: ApprovalChoice) => void;
+}) {
+  const r = props.request;
+  return (
+    <div className="approval-card" data-testid="approval-card" data-tool={r.tool}>
+      <div className="approval-head">
+        <strong>需要审批：{r.tool}</strong>
+        {r.danger && <span className="badge-danger">危险命令</span>}
+        <span className="dim" data-testid="approval-reason">
+          {r.reason}（模式：{r.mode}）
+        </span>
+      </div>
+      <pre className="approval-args" data-testid="approval-args">
+        {JSON.stringify(r.args, null, 2)}
+      </pre>
+      <div className="approval-actions">
+        <button
+          type="button"
+          data-testid="approval-allow-once"
+          onClick={() => props.onRespond("once")}
+        >
+          允许一次
+        </button>
+        <button
+          type="button"
+          data-testid="approval-allow-session"
+          onClick={() => props.onRespond("session")}
+        >
+          本会话始终允许
+        </button>
+        <button
+          type="button"
+          data-testid="approval-deny"
+          className="btn-danger"
+          onClick={() => props.onRespond("deny")}
+        >
+          拒绝
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function RightPanel(props: {
   tab: RightTab;
