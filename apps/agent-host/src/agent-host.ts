@@ -88,6 +88,11 @@ export class SessionHandle extends EventEmitter {
   ) {
     super();
     client.on("event", (record) => this.onPiEvent(record));
+    // 进程退出 → 传输层以带退出码/stderr 的 PiProcessError 结算全部挂起请求（上下文不丢）。
+    // PiProcess 的 exit 监听在其构造时先注册，故此处 exitInfo 已就绪。
+    process.on("exit", () => {
+      client.failTransport(process.toExitError());
+    });
     client.on("close", (err) => {
       this.failRun(
         new AbnormalTerminationError("RPC 传输关闭时运行尚未结算（agent_settled 未到达）", {
@@ -100,7 +105,8 @@ export class SessionHandle extends EventEmitter {
     });
     process.on("exit", (info) => {
       this.store.append(this.id, "lifecycle", { event: "process_exit", ...info });
-      if (this.store.getMeta(this.id).status === "live") {
+      // 优雅关闭（close() 已置位）导致的退出不算异常终止，不覆盖状态。
+      if (!this.closedFlag && this.store.getMeta(this.id).status === "live") {
         this.store.updateMeta(this.id, { status: "aborted" });
       }
       this.emit("processExit", info);

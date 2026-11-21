@@ -45,6 +45,9 @@ export interface RpcClientOptions {
   requestTimeoutMs?: number;
 }
 
+/** stdout 结束时等待进程退出路径先行结算的宽限（ms）。 */
+const STREAM_END_GRACE_MS = 50;
+
 export declare interface RpcClient {
   /** 每条成功解析的记录（响应与事件）都会触发。 */
   on(event: "record", listener: (record: RpcRecord) => void): this;
@@ -65,6 +68,7 @@ export class RpcClient extends EventEmitter {
   private counter = 0;
   private closed = false;
   private closeError: Error | null = null;
+  private streamEndTimer: NodeJS.Timeout | null = null;
   private readonly defaultTimeoutMs: number;
 
   /** 全部坏行记录（不吞掉，供审计与测试断言）。 */
@@ -91,9 +95,14 @@ export class RpcClient extends EventEmitter {
     this.input = input;
     output.setEncoding("utf8");
     output.on("data", (chunk: string) => this.onData(chunk));
-    output.on("end", () =>
-      this.failTransport(new RpcTransportError("Pi stdout 已结束（进程可能已退出）")),
-    );
+    output.on("end", () => {
+      // stdout 结束通常与进程退出同时发生，但 exit 事件可能晚几毫秒到达。
+      // 给一个短暂宽限：让宿主持有的进程退出路径先以带退出码/stderr 的
+      // PiProcessError 结算（上下文更完整）；宽限内无人结算才用通用错误。
+      this.streamEndTimer = setTimeout(() => {
+        this.failTransport(new RpcTransportError("Pi stdout 已结束（进程可能已退出）"));
+      }, STREAM_END_GRACE_MS);
+    });
     output.on("error", (err: Error) =>
       this.failTransport(new RpcTransportError("Pi stdout 出错", {}, err)),
     );
@@ -162,6 +171,10 @@ export class RpcClient extends EventEmitter {
     if (this.closed) return;
     this.closed = true;
     this.closeError = err;
+    if (this.streamEndTimer) {
+      clearTimeout(this.streamEndTimer);
+      this.streamEndTimer = null;
+    }
     const pending = [...this.pending.values()];
     this.pending.clear();
     for (const p of pending) {
