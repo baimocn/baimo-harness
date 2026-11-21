@@ -602,6 +602,9 @@ function wireHandle(handle: SessionHandle): void {
   handle.on("queueChanged", (entries) => {
     send("queue:changed", { sessionId: handle.id, entries });
   });
+  handle.on("costRecorded", () => {
+    send("cost:changed", { sessionId: handle.id });
+  });
   handle.on("processExit", (info) => {
     live.delete(handle.id);
     send("session:process-exit", {
@@ -618,6 +621,8 @@ const MILESTONE_LABELS: Record<string, string> = {
   session_resumed: "会话续接",
   run_settled: "检查点 · 运行完成",
   run_stopped: "检查点 · 已停止",
+  budget_fuse_tripped: "检查点 · 预算熔断触发",
+  run_budget_fused: "检查点 · 预算熔断停止",
   run_aborted: "运行异常终止",
   run_timeout: "运行超时",
   process_exit: "Pi 进程退出",
@@ -712,10 +717,17 @@ function registerIpc(): void {
     const runPromise = (async () => {
       try {
         const outcome = await handle.prompt(message);
+        const fused = outcome.disposition === "budget_fused";
         send("session:run-settled", {
           sessionId: id,
           ok: true,
           stopped: outcome.disposition === "aborted",
+          // M-07：预算熔断如实呈现为熔断停止，绝不记正常完成
+          fused,
+          fuseMessage:
+            fused && outcome.fuse
+              ? `预算熔断（${outcome.fuse.scope === "run" ? "单次运行" : "单日"}）：成本 $${outcome.fuse.cost.toFixed(4)} 超过上限 $${outcome.fuse.cap.toFixed(4)}，运行已停止`
+              : undefined,
         });
         void pushStats(id);
       } catch (err) {
@@ -797,6 +809,72 @@ function registerIpc(): void {
       if (!handle) return { ok: false, error: "会话未在运行" };
       try {
         await handle.withdrawQueueEntry(entryId);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  /* ---------- 成本账本（M-07） ---------- */
+
+  ipcMain.handle("cost:get", (_e, sessionId: string) => {
+    const ledger = host.costLedger;
+    const entries = ledger.entries();
+    const meta =
+      live.get(sessionId)?.meta ??
+      host.listSessions().find((m) => m.id === sessionId);
+    return {
+      session: ledger.sessionTotals(sessionId),
+      today: ledger.todayTotals(),
+      budgets: ledger.loadBudgets(),
+      pricing: ledger.loadPricing().models,
+      currentModelKey: meta?.modelRef
+        ? `${meta.modelRef.provider}/${meta.modelRef.modelId}`
+        : null,
+      recentEntries: entries
+        .slice(-20)
+        .reverse()
+        .map((e) => ({
+          ts: e.ts,
+          sessionId: e.sessionId,
+          modelKey: e.modelRef
+            ? `${e.modelRef.provider}/${e.modelRef.modelId}`
+            : null,
+          tokens: e.tokens,
+          cost: e.cost,
+        })),
+    };
+  });
+
+  ipcMain.handle(
+    "cost:set-pricing",
+    (_e, modelKey: string, price: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    }) => {
+      try {
+        host.costLedger.setPrice(modelKey, price);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "cost:set-budgets",
+    (_e, budgets: { perRunCap: number | null; perDayCap: number | null }) => {
+      try {
+        host.costLedger.saveBudgets(budgets);
         return { ok: true };
       } catch (err) {
         return {

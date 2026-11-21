@@ -74,6 +74,12 @@ const api: BaimoBridge = {
   onQueueChanged: (
     cb: (e: { sessionId: string; entries: SteeringEntryDto[] }) => void,
   ) => subscribe("queue:changed", cb),
+  getCost: (sessionId: string) => ipcRenderer.invoke("cost:get", sessionId),
+  setPricing: (modelKey: string, price: unknown) =>
+    ipcRenderer.invoke("cost:set-pricing", modelKey, price),
+  setBudgets: (budgets: unknown) => ipcRenderer.invoke("cost:set-budgets", budgets),
+  onCostChanged: (cb: (e: { sessionId: string }) => void) =>
+    subscribe("cost:changed", cb),
   getPlan: (id: string) => ipcRenderer.invoke("plan:get", id),
   respondPlanSelect: (sessionId: string, requestId: string, choice: string) =>
     ipcRenderer.invoke("plan:respond-select", sessionId, requestId, choice),

@@ -10,8 +10,11 @@ import type {
   ApprovalChoice,
   ApprovalRequestDto,
   BaimoBridge,
+  BudgetDto,
   CheckpointDto,
+  CostViewDto,
   HostSnapshotDto,
+  ModelPriceDto,
   PermissionMode,
   PlanEditRequestDto,
   PlanRequestDto,
@@ -31,6 +34,7 @@ import {
   StatusBar,
   StreamView,
   TopBar,
+  fmtCost,
   type RightTab,
 } from "./components.js";
 import {
@@ -68,6 +72,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const [queuesMap, setQueuesMap] = useState<Map<string, SteeringEntryDto[]>>(
     new Map(),
   );
+  const [costView, setCostView] = useState<CostViewDto | null>(null);
   /** 已把「投递」呈现为执行流用户消息的条目 id（防实时推送与回放双份）。 */
   const deliveredInjectedRef = useRef<Map<string, Set<string>>>(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
@@ -126,6 +131,14 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     [bridge],
   );
 
+  const loadCost = useCallback(
+    async (id: string) => {
+      const view = await bridge.getCost(id).catch(() => null);
+      if (view) setCostView(view);
+    },
+    [bridge],
+  );
+
   const loadQueue = useCallback(
     async (id: string) => {
       const entries = await bridge.getQueue(id).catch(() => null);
@@ -161,7 +174,14 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       updateStream(e.sessionId, e.record),
     );
     const offSettled = bridge.onRunSettled(async (e) => {
-      if (e.ok) {
+      if (e.ok && e.fused) {
+        // M-07 预算熔断：红色显形说明成本与上限，绝不呈现为正常完成
+        updateStream(e.sessionId, {
+          type: "notice",
+          label: e.fuseMessage ?? "预算熔断：运行已停止",
+          tone: "error",
+        });
+      } else if (e.ok) {
         // 完成/停止标记与回放同口径：由落盘 lifecycle 驱动，这里按结算结果注入同一事件
         updateStream(e.sessionId, {
           type: "lifecycle",
@@ -176,6 +196,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       // 检查点以主进程快照为准重新拉取；快照同步状态
       loadCheckpoints(e.sessionId).catch(() => undefined);
       loadPlan(e.sessionId).catch(() => undefined);
+      loadCost(e.sessionId).catch(() => undefined);
       refreshSnapshot().catch(() => undefined);
     });
     const offCkpt = bridge.onCheckpointsChanged((e) => {
@@ -203,6 +224,9 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     });
     const offPlanChanged = bridge.onPlanChanged((e) => {
       loadPlan(e.sessionId).catch(() => undefined);
+    });
+    const offCost = bridge.onCostChanged((e) => {
+      loadCost(e.sessionId).catch(() => undefined);
     });
     const offQueue = bridge.onQueueChanged((e) => {
       setQueuesMap((prev) => new Map(prev).set(e.sessionId, e.entries));
@@ -252,8 +276,9 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       offPlanEdit();
       offPlanChanged();
       offQueue();
+      offCost();
     };
-  }, [bridge, loadCheckpoints, loadHistory, loadPlan, refreshSnapshot, updateStream]);
+  }, [bridge, loadCheckpoints, loadCost, loadHistory, loadPlan, refreshSnapshot, updateStream]);
 
   const allSessions = useMemo(() => {
     if (!snapshot) return [];
@@ -297,6 +322,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     loadCheckpoints(id).catch(() => undefined);
     loadPlan(id).catch(() => undefined);
     loadQueue(id).catch(() => undefined);
+    loadCost(id).catch(() => undefined);
     const meta = allSessions.find((s) => s.id === id);
     if (meta?.live && !statsMap.has(id)) {
       const st = await bridge.stats(id).catch(() => null);
@@ -312,6 +338,21 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     setActiveId(meta.id);
     loadPlan(meta.id).catch(() => undefined);
     loadQueue(meta.id).catch(() => undefined);
+    loadCost(meta.id).catch(() => undefined);
+  };
+
+  const handleSavePricing = async (modelKey: string, price: ModelPriceDto) => {
+    if (!activeId) return;
+    const res = await bridge.setPricing(modelKey, price);
+    if (!res.ok) notice(activeId, `定价保存失败：${res.error ?? "未知错误"}`, "error");
+    loadCost(activeId).catch(() => undefined);
+  };
+
+  const handleSaveBudgets = async (budgets: BudgetDto) => {
+    if (!activeId) return;
+    const res = await bridge.setBudgets(budgets);
+    if (!res.ok) notice(activeId, `预算保存失败：${res.error ?? "未知错误"}`, "error");
+    loadCost(activeId).catch(() => undefined);
   };
 
   const handleSend = async (text: string) => {
@@ -581,6 +622,11 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         onModeChange={handleMode}
         onModelChange={handleModel}
         runLabel={runLabel}
+        costLabel={
+          activeId && costView
+            ? `本会话 ${fmtCost(costView.session.cost)} · 今日 ${fmtCost(costView.today.cost)}`
+            : null
+        }
       />
       <div className="main-row">
         <SessionList
@@ -643,6 +689,9 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
           planView={activeId ? (planViews.get(activeId) ?? null) : null}
           onPlanRequiredChange={handlePlanRequiredChange}
           onPlanPauseChange={handlePlanPauseChange}
+          costView={costView}
+          onSavePricing={handleSavePricing}
+          onSaveBudgets={handleSaveBudgets}
         />
       </div>
       <StatusBar

@@ -2,13 +2,16 @@
  * 三栏界面组件（GUI-SPEC v0.2）。全部为受控展示组件，状态由 App 持有。
  * 凡本块未接入的能力（文件树、计划面板、审批拦截等）都在界面上明文标注，不装作可用。
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   PERMISSION_MODES,
   type ApprovalChoice,
   type ApprovalRequestDto,
+  type BudgetDto,
   type CheckpointDto,
+  type CostViewDto,
   type HostSnapshotDto,
+  type ModelPriceDto,
   type PermissionMode,
   type PlanSelectChoice,
   type PlanStateDto,
@@ -34,6 +37,8 @@ export function TopBar(props: {
   onModeChange: (m: PermissionMode) => void;
   onModelChange: (provider: string, modelId: string) => void;
   runLabel: string;
+  /** M-07 成本读数（本会话/今日真实花费）；无数据时不渲染。 */
+  costLabel?: string | null;
 }) {
   const { snapshot, mode } = props;
   const wsName =
@@ -96,6 +101,15 @@ export function TopBar(props: {
           <select className="model-select" disabled title="未配置模型">
             <option>未配置模型</option>
           </select>
+        )}
+        {props.costLabel && (
+          <span
+            className="cost-readout"
+            data-testid="cost-readout"
+            title="成本账本（M-07）：按会话统计与定价折算的真实花费（本会话 · 今日）"
+          >
+            {props.costLabel}
+          </span>
         )}
         <span className="run-status" data-testid="run-status">
           {props.runLabel}
@@ -365,7 +379,192 @@ export function StreamView(props: {
 
 /* ---------------- 右栏 ---------------- */
 
-export type RightTab = "changes" | "files" | "checkpoints" | "plan";
+export type RightTab = "changes" | "files" | "checkpoints" | "plan" | "ledger";
+
+/** 成本显示口径：null 必须是「未定价」，绝不显示成 $0。 */
+export function fmtCost(cost: number | null): string {
+  return cost === null ? "未定价" : `$${cost.toFixed(4)}`;
+}
+
+/**
+ * 成本账本面板（M-07）：本会话/今日真实花费 vs 预算、当前模型定价编辑、
+ * 预算上限编辑、最近账目。数字全部来自宿主账本落盘汇总，不做前端估算。
+ */
+export function LedgerPanel(props: {
+  costView: CostViewDto | null;
+  onSavePricing: (modelKey: string, price: ModelPriceDto) => void;
+  onSaveBudgets: (budgets: BudgetDto) => void;
+}) {
+  const view = props.costView;
+  const modelKey = view?.currentModelKey ?? null;
+  const currentPrice = modelKey ? view?.pricing[modelKey] : undefined;
+  const [priceInputs, setPriceInputs] = useState({ input: "", output: "", cacheRead: "", cacheWrite: "" });
+  const [budgetInputs, setBudgetInputs] = useState({ perRun: "", perDay: "" });
+  const budgetsSig = view ? JSON.stringify(view.budgets) : "";
+  const priceSig = currentPrice ? JSON.stringify(currentPrice) : "";
+  useEffect(() => {
+    setBudgetInputs({
+      perRun: view?.budgets.perRunCap != null ? String(view.budgets.perRunCap) : "",
+      perDay: view?.budgets.perDayCap != null ? String(view.budgets.perDayCap) : "",
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [budgetsSig]);
+  useEffect(() => {
+    setPriceInputs(
+      currentPrice
+        ? {
+            input: String(currentPrice.input),
+            output: String(currentPrice.output),
+            cacheRead: String(currentPrice.cacheRead),
+            cacheWrite: String(currentPrice.cacheWrite),
+          }
+        : { input: "", output: "", cacheRead: "", cacheWrite: "" },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priceSig, modelKey]);
+  if (!view) {
+    return (
+      <div data-testid="panel-ledger">
+        <p className="dim pad">成本账本加载中…</p>
+      </div>
+    );
+  }
+  const parseNum = (s: string): number | null => {
+    const n = Number(s);
+    return s.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  return (
+    <div data-testid="panel-ledger">
+      <div className="ledger-totals">
+        <div>
+          本会话花费{" "}
+          <strong data-testid="ledger-session-cost">{fmtCost(view.session.cost)}</strong>
+          <span className="dim">
+            {" "}· {view.session.tokens.total} tokens · {view.session.entries} 笔
+          </span>
+        </div>
+        <div>
+          今日花费{" "}
+          <strong data-testid="ledger-today-cost">{fmtCost(view.today.cost)}</strong>
+          <span className="dim">
+            {" "}· {view.today.tokens.total} tokens · {view.today.entries} 笔
+          </span>
+        </div>
+        {(view.session.unpricedTokens > 0 || view.today.unpricedTokens > 0) && (
+          <p className="dim">
+            另有未定价用量（本会话 {view.session.unpricedTokens} / 今日{" "}
+            {view.today.unpricedTokens} tokens）：该模型未配单价，成本未知，不计入金额。
+          </p>
+        )}
+      </div>
+      <div className="ledger-section">
+        <h4>预算上限（美元，超限熔断，YOLO 也不例外）</h4>
+        <label>
+          单次运行上限
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            data-testid="budget-run-cap"
+            value={budgetInputs.perRun}
+            placeholder="不限"
+            onChange={(e) => setBudgetInputs({ ...budgetInputs, perRun: e.target.value })}
+          />
+        </label>
+        <label>
+          单日上限
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            data-testid="budget-day-cap"
+            value={budgetInputs.perDay}
+            placeholder="不限"
+            onChange={(e) => setBudgetInputs({ ...budgetInputs, perDay: e.target.value })}
+          />
+        </label>
+        <button
+          type="button"
+          data-testid="budgets-save"
+          onClick={() =>
+            props.onSaveBudgets({
+              perRunCap: parseNum(budgetInputs.perRun),
+              perDayCap: parseNum(budgetInputs.perDay),
+            })
+          }
+        >
+          保存预算
+        </button>
+      </div>
+      <div className="ledger-section">
+        <h4>模型定价（每 1M tokens，美元）</h4>
+        {modelKey ? (
+          <>
+            <p className="dim">
+              当前模型：{modelKey}
+              {!currentPrice && "（未定价：成本显示为未定价、预算熔断不生效）"}
+            </p>
+            {(
+              [
+                ["input", "输入", "price-input"],
+                ["output", "输出", "price-output"],
+                ["cacheRead", "缓存读", "price-cache-read"],
+                ["cacheWrite", "缓存写", "price-cache-write"],
+              ] as const
+            ).map(([key, label, testid]) => (
+              <label key={key}>
+                {label}
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  data-testid={testid}
+                  value={priceInputs[key]}
+                  onChange={(e) =>
+                    setPriceInputs({ ...priceInputs, [key]: e.target.value })
+                  }
+                />
+              </label>
+            ))}
+            <button
+              type="button"
+              data-testid="pricing-save"
+              onClick={() => {
+                const price: ModelPriceDto = {
+                  input: parseNum(priceInputs.input) ?? 0,
+                  output: parseNum(priceInputs.output) ?? 0,
+                  cacheRead: parseNum(priceInputs.cacheRead) ?? 0,
+                  cacheWrite: parseNum(priceInputs.cacheWrite) ?? 0,
+                };
+                props.onSavePricing(modelKey, price);
+              }}
+            >
+              保存定价
+            </button>
+          </>
+        ) : (
+          <p className="dim">先选择或新建一个会话后可编辑其模型定价。</p>
+        )}
+      </div>
+      <div className="ledger-section">
+        <h4>最近账目</h4>
+        <div data-testid="ledger-entries">
+          {view.recentEntries.length === 0 && (
+            <p className="dim">暂无账目：跑一轮运行后按差分自动记账。</p>
+          )}
+          {view.recentEntries.map((e, i) => (
+            <div key={`${e.ts}-${i}`} className="ledger-entry" data-testid="ledger-entry">
+              <span className="dim">{new Date(e.ts).toLocaleTimeString()}</span>
+              <span>{e.modelKey ?? "未知模型"}</span>
+              <span className="dim">{e.tokens.total} tokens</span>
+              <span>{fmtCost(e.cost)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /**
  * 审批卡（M-02）：写类工具被审批门截停时出现，Pi 在裁决前不会执行。
@@ -571,6 +770,9 @@ export function RightPanel(props: {
   planView: PlanViewDto | null;
   onPlanRequiredChange: (required: boolean) => void;
   onPlanPauseChange: (paused: boolean) => void;
+  costView: CostViewDto | null;
+  onSavePricing: (modelKey: string, price: ModelPriceDto) => void;
+  onSaveBudgets: (budgets: BudgetDto) => void;
 }) {
   const changes = props.state ? selectFileChanges(props.state) : [];
   const tabs: Array<{ id: RightTab; label: string }> = [
@@ -578,6 +780,7 @@ export function RightPanel(props: {
     { id: "files", label: "文件" },
     { id: "checkpoints", label: "检查点" },
     { id: "plan", label: "计划" },
+    { id: "ledger", label: "账本" },
   ];
   const checkpoints = [...props.checkpoints].reverse();
   return (
@@ -715,6 +918,13 @@ export function RightPanel(props: {
               </div>
             )}
           </div>
+        )}
+        {props.tab === "ledger" && (
+          <LedgerPanel
+            costView={props.costView}
+            onSavePricing={props.onSavePricing}
+            onSaveBudgets={props.onSaveBudgets}
+          />
         )}
       </div>
     </aside>

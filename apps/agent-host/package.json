@@ -1,1 +1,15 @@
-{"description":"Pi 子进程托管层：进程管理、RPC 客户端、会话落盘与内核债壳层补偿","main":"dist/index.js","name":"@baimo-harness/agent-host","private":true,"scripts":{"build":"tsc -p tsconfig.json"},"type":"module","types":"dist/index.d.ts","version":"0.0.0"}
+{
+  "description": "Pi 子进程托管层：进程管理、RPC 客户端、会话落盘与内核债壳层补偿",
+  "main": "dist/index.js",
+  "name": "@baimo-harness/agent-host",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "version": "0.0.0",
+  "dependencies": {
+    "@baimo-harness/core": "*"
+  }
+}

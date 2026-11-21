@@ -16,8 +16,16 @@ import { fileURLToPath } from "node:url";
 import {
   AbnormalTerminationError,
   AgentHostError,
+  BudgetExceededError,
   RpcTimeoutError,
 } from "./errors.js";
+import {
+  CostLedger,
+  computeCost,
+  type CostEntry,
+  type CostTotals,
+  type TokenUsage,
+} from "@baimo-harness/core";
 import {
   resolveHostConfig,
   type HostConfig,
@@ -99,12 +107,15 @@ export interface PromptOutcome {
   /**
    * Pi 对 prompt 的处置：handled = 未起运行；started = 已启动并结算；
    * aborted = 用户经 abort() 停止，运行以 agent_settled 收尾但按「已停止」记账，
-   * 绝不冒充正常完成（落盘 lifecycle 为 run_stopped 而非 run_settled）。
+   * 绝不冒充正常完成（落盘 lifecycle 为 run_stopped 而非 run_settled）；
+   * budget_fused = 预算熔断停止（M-07），落盘 run_budget_fused + budget_fuse_tripped。
    */
   disposition: string;
   /** 本轮收到的会话事件数（不含 response 本身）。 */
   eventsReceived: number;
   settled: true;
+  /** 熔断详情（disposition=budget_fused 时有值）。 */
+  fuse?: { scope: "run" | "day"; cost: number; cap: number };
 }
 
 interface ActiveRun {
@@ -112,9 +123,27 @@ interface ActiveRun {
   lastEventType: string | null;
   /** 用户已请求停止：结算时按 run_stopped 记账（见 PromptOutcome.aborted）。 */
   abortRequested: boolean;
+  /** 运行开始时的会话累计用量快照（M-07 差分记账基准）；取不到为 null（本轮不记账并显形）。 */
+  statsBefore: TokenUsage | null;
+  /** 预算熔断已触发（M-07）：结算时按 run_budget_fused 记账，优先于 aborted。 */
+  fuse: { scope: "run" | "day"; cost: number; cap: number } | null;
+  /** 熔断检查进行中（防 turn_end 并发重复检查）。 */
+  fuseCheckBusy: boolean;
   resolve: (outcome: PromptOutcome) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout | null;
+}
+
+/** 用量差分（结算累计 − 运行前累计），负数钳到 0（累计值理论单调递增）。 */
+function subTokens(after: TokenUsage, before: TokenUsage): TokenUsage {
+  const d = (a: number, b: number) => Math.max(0, a - b);
+  return {
+    input: d(after.input, before.input),
+    output: d(after.output, before.output),
+    cacheRead: d(after.cacheRead, before.cacheRead),
+    cacheWrite: d(after.cacheWrite, before.cacheWrite),
+    total: d(after.total, before.total),
+  };
 }
 
 export declare interface SessionHandle {
@@ -126,6 +155,15 @@ export declare interface SessionHandle {
   on(event: "abnormalTermination", listener: (err: AbnormalTerminationError) => void): this;
   /** steering 队列镜像变更（入队/投递/撤回/恢复后推送全量快照）。 */
   on(event: "queueChanged", listener: (entries: SteeringEntry[]) => void): this;
+  /** 一轮运行的成本已记账（M-07）：账目 + 本会话/今日汇总。 */
+  on(
+    event: "costRecorded",
+    listener: (e: {
+      entry: CostEntry;
+      sessionTotals: CostTotals;
+      dayTotals: CostTotals;
+    }) => void,
+  ): this;
 }
 
 export class SessionHandle extends EventEmitter {
@@ -141,6 +179,7 @@ export class SessionHandle extends EventEmitter {
     readonly client: RpcClient,
     private readonly config: ResolvedHostConfig,
     private readonly steeringStore?: SteeringStore,
+    private readonly costLedger?: CostLedger,
   ) {
     super();
     this.queueEntries = steeringStore ? steeringStore.load(id) : [];
@@ -228,6 +267,18 @@ export class SessionHandle extends EventEmitter {
         sessionId: this.id,
       });
     }
+    // M-07 预算纪律：今日已定价成本已达单日上限 → 发起前直接拒绝，不闷头扣费。
+    if (this.costLedger) {
+      const budgets = this.costLedger.loadBudgets();
+      if (budgets.perDayCap !== null) {
+        const today = this.costLedger.todayTotals();
+        if (today.cost !== null && today.cost >= budgets.perDayCap) {
+          throw new BudgetExceededError(today.cost, budgets.perDayCap, {
+            sessionId: this.id,
+          });
+        }
+      }
+    }
     // 新一轮开始：上一轮的投递/撤回结果从镜像里清掉（记录仍在事件日志里），
     // 队列条只保留待投递与本轮新入队的，界面队列条不堆历史。
     if (this.queueEntries.some((e) => e.status !== "queued")) {
@@ -236,6 +287,8 @@ export class SessionHandle extends EventEmitter {
       this.emitQueueChanged();
     }
     this.store.append(this.id, "prompt", { message });
+    // M-07：运行前用量快照（差分记账基准）；取不到则本轮不记账，结算时显形。
+    const statsBefore = this.costLedger ? await this.fetchStats() : null;
 
     let response: RpcResponse;
     try {
@@ -265,6 +318,9 @@ export class SessionHandle extends EventEmitter {
         eventsReceived: 0,
         lastEventType: null,
         abortRequested: false,
+        statsBefore,
+        fuse: null,
+        fuseCheckBusy: false,
         resolve,
         reject,
         timer: null,
@@ -576,9 +632,30 @@ export class SessionHandle extends EventEmitter {
     if (!run) return;
     run.eventsReceived += 1;
     run.lastEventType = typeof record.type === "string" ? record.type : null;
+    if (record.type === "turn_end" && !run.fuse) {
+      // M-07：每轮结束查一次预算（用量以轮为粒度更新，这是最早可熔断点）
+      void this.checkBudgetFuse(run);
+    }
     if (record.type === "agent_settled") {
       this.run = null;
       if (run.timer) clearTimeout(run.timer);
+      // M-07：本轮记账（差分）在结算后异步完成，结果经 costRecorded 事件推送
+      void this.recordRunCost(run);
+      if (run.fuse) {
+        // 预算熔断：Pi 仍以 agent_settled 收尾，但记账必须是「熔断停止」。
+        this.store.append(this.id, "lifecycle", {
+          event: "run_budget_fused",
+          eventsReceived: run.eventsReceived,
+          fuse: run.fuse,
+        });
+        run.resolve({
+          disposition: "budget_fused",
+          eventsReceived: run.eventsReceived,
+          settled: true,
+          fuse: run.fuse,
+        });
+        return;
+      }
       if (run.abortRequested) {
         // 用户停止：Pi 仍以 agent_settled 收尾（实测），但记账必须是「已停止」。
         this.store.append(this.id, "lifecycle", {
@@ -600,6 +677,106 @@ export class SessionHandle extends EventEmitter {
         disposition: "started",
         eventsReceived: run.eventsReceived,
         settled: true,
+      });
+    }
+  }
+
+  /** 读 Pi 会话累计用量（get_session_stats）；失败返回 null（调用方显形处理）。 */
+  private async fetchStats(): Promise<TokenUsage | null> {
+    try {
+      const resp = await this.client.request({ type: "get_session_stats" });
+      const tokens = (resp.data as { tokens?: TokenUsage } | undefined)?.tokens;
+      if (!tokens) return null;
+      return {
+        input: tokens.input ?? 0,
+        output: tokens.output ?? 0,
+        cacheRead: tokens.cacheRead ?? 0,
+        cacheWrite: tokens.cacheWrite ?? 0,
+        total: tokens.total ?? 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * M-07 预算熔断检查（每 turn_end 一次）：本轮差分成本或今日累计
+   * （已落账 + 本轮）超过上限 → 记 budget_fuse_tripped 并 abort 本轮，
+   * 结算按 budget_fused 记账。未定价模型无法折算金额，不熔断
+   * （账本以未定价口径显形）；统计取不到时跳过本次检查，不误杀。
+   */
+  private async checkBudgetFuse(run: ActiveRun): Promise<void> {
+    const ledger = this.costLedger;
+    if (!ledger || !run.statsBefore || run.fuse || run.fuseCheckBusy) return;
+    const budgets = ledger.loadBudgets();
+    if (budgets.perRunCap === null && budgets.perDayCap === null) return;
+    const price = ledger.priceFor(this.meta.modelRef);
+    if (!price) return;
+    run.fuseCheckBusy = true;
+    try {
+      const now = await this.fetchStats();
+      if (!now || this.run !== run || run.fuse) return;
+      const runCost = computeCost(price, subTokens(now, run.statsBefore));
+      let fuse: ActiveRun["fuse"] = null;
+      if (budgets.perRunCap !== null && runCost > budgets.perRunCap) {
+        fuse = { scope: "run", cost: runCost, cap: budgets.perRunCap };
+      } else if (budgets.perDayCap !== null) {
+        const dayCost = (ledger.todayTotals().cost ?? 0) + runCost;
+        if (dayCost > budgets.perDayCap) {
+          fuse = { scope: "day", cost: dayCost, cap: budgets.perDayCap };
+        }
+      }
+      if (!fuse) return;
+      run.fuse = fuse;
+      this.store.append(this.id, "lifecycle", {
+        event: "budget_fuse_tripped",
+        scope: fuse.scope,
+        cost: fuse.cost,
+        cap: fuse.cap,
+      });
+      // abort 本轮：Pi 以 agent_settled 收尾，结算分支按 run.fuse 记账为熔断
+      await this.client
+        .request({ type: "abort" })
+        .catch(() => undefined);
+    } finally {
+      run.fuseCheckBusy = false;
+    }
+  }
+
+  /** M-07 结算记账：差分用量落账并推送 costRecorded；失败以 lifecycle 显形，不静默。 */
+  private async recordRunCost(run: ActiveRun): Promise<void> {
+    const ledger = this.costLedger;
+    if (!ledger) return;
+    try {
+      if (!run.statsBefore) {
+        this.store.append(this.id, "lifecycle", {
+          event: "cost_accounting_failed",
+          reason: "运行前用量快照获取失败，本轮未记账",
+        });
+        return;
+      }
+      const after = await this.fetchStats();
+      if (!after) {
+        this.store.append(this.id, "lifecycle", {
+          event: "cost_accounting_failed",
+          reason: "结算时用量获取失败，本轮未记账",
+        });
+        return;
+      }
+      const entry = ledger.record({
+        sessionId: this.id,
+        modelRef: this.meta.modelRef,
+        tokens: subTokens(after, run.statsBefore),
+      });
+      this.emit("costRecorded", {
+        entry,
+        sessionTotals: ledger.sessionTotals(this.id),
+        dayTotals: ledger.todayTotals(),
+      });
+    } catch (err) {
+      this.store.append(this.id, "lifecycle", {
+        event: "cost_accounting_failed",
+        reason: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -641,6 +818,8 @@ export class AgentHost extends EventEmitter {
   readonly config: ResolvedHostConfig;
   private readonly store: SessionStore;
   private readonly steeringStore: SteeringStore;
+  /** 成本账本（M-07）：<dataDir>/cost 下 pricing.json / budgets.json / ledger.jsonl。 */
+  readonly costLedger: CostLedger;
   private readonly sessions = new Map<string, SessionHandle>();
   private started = false;
 
@@ -650,6 +829,7 @@ export class AgentHost extends EventEmitter {
     this.config = resolveHostConfig(config, defaultPiCliPath());
     this.store = new SessionStore(this.config.dataDir);
     this.steeringStore = new SteeringStore(this.config.dataDir);
+    this.costLedger = new CostLedger(join(this.config.dataDir, "cost"));
   }
 
   /** 启动宿主：校验 Pi 设置（K-03）、准备数据目录与索引。 */
@@ -747,6 +927,7 @@ export class AgentHost extends EventEmitter {
       client,
       this.config,
       this.steeringStore,
+      this.costLedger,
     );
     handle.on("processExit", (info) => {
       this.emit("sessionProcessExit", { sessionId: meta.id, exit: info });

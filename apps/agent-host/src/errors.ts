@@ -109,3 +109,22 @@ export class SessionStoreError extends AgentHostError {
     super("SESSION_STORE_FAILED", message, context, cause);
   }
 }
+
+/**
+ * 预算纪律（M-07）：今日已定价成本已达单日上限时，宿主在发起新运行前
+ * 直接拒绝（BUDGET_EXCEEDED），不让 agent 闷头继续扣费。
+ */
+export class BudgetExceededError extends AgentHostError {
+  readonly dayTotal: number;
+  readonly perDayCap: number;
+
+  constructor(dayTotal: number, perDayCap: number, context: HostErrorContext = {}) {
+    super(
+      "BUDGET_EXCEEDED",
+      `今日成本 $${dayTotal.toFixed(4)} 已达单日预算上限 $${perDayCap.toFixed(4)}，拒绝发起新运行（调高上限或等明日）`,
+      { ...context, dayTotal, perDayCap },
+    );
+    this.dayTotal = dayTotal;
+    this.perDayCap = perDayCap;
+  }
+}

@@ -181,8 +181,62 @@ export interface RunSettledPayload {
   ok: boolean;
   /** 本轮是被用户停止的（agent-host 以 disposition=aborted 结算）：界面记「已停止」，不记完成。 */
   stopped?: boolean;
+  /** 本轮为预算熔断（M-07）收尾：界面呈现熔断原因，不记完成。 */
+  fused?: boolean;
+  /** 熔断说明（主进程按 fuse 详情拼好，含成本与上限金额）。 */
+  fuseMessage?: string;
   error?: string;
   code?: string;
+}
+
+/* ---------- M-07 成本账本 ---------- */
+
+export interface TokenUsageDto {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+export interface ModelPriceDto {
+  /** 每 1M tokens 的价格（美元）。 */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface CostTotalsDto {
+  tokens: TokenUsageDto;
+  /** 已定价合计；全部未定价时为 null（界面显示「未定价」，不冒充 0）。 */
+  cost: number | null;
+  unpricedTokens: number;
+  entries: number;
+}
+
+export interface CostEntryDto {
+  ts: string;
+  sessionId: string;
+  modelKey: string | null;
+  tokens: TokenUsageDto;
+  cost: number | null;
+}
+
+export interface BudgetDto {
+  perRunCap: number | null;
+  perDayCap: number | null;
+}
+
+export interface CostViewDto {
+  session: CostTotalsDto;
+  today: CostTotalsDto;
+  budgets: BudgetDto;
+  pricing: Record<string, ModelPriceDto>;
+  /** 当前会话的模型键（provider/modelId），定价编辑的目标。 */
+  currentModelKey: string | null;
+  /** 最近账目（新在前）。 */
+  recentEntries: CostEntryDto[];
 }
 
 export interface ProcessExitPayload {
@@ -281,6 +335,13 @@ export interface BaimoBridge {
     id: string,
     entryId: string,
   ): Promise<{ ok: boolean; error?: string }>;
+  /** 成本视图：会话/今日汇总 + 预算 + 定价 + 最近账目（M-07）。 */
+  getCost(sessionId: string): Promise<CostViewDto>;
+  /** 保存某模型的四项单价（每 1M tokens，美元）。 */
+  setPricing(modelKey: string, price: ModelPriceDto): Promise<{ ok: boolean; error?: string }>;
+  /** 保存预算上限（null = 不限）。 */
+  setBudgets(budgets: BudgetDto): Promise<{ ok: boolean; error?: string }>;
+  onCostChanged(cb: (e: { sessionId: string }) => void): () => void;
   onQueueChanged(
     cb: (e: { sessionId: string; entries: SteeringEntryDto[] }) => void,
   ): () => void;

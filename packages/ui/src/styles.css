@@ -175,6 +175,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .queue-kind-switch { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .queue-kind-switch button { border: none; border-radius: 0; background: transparent; padding: 3px 7px; font-size: 11px; }
 .queue-kind-switch button.active { background: var(--accent); color: #fff; }
+.cost-readout { color: var(--accent); font-size: 12px; }
+.ledger-totals { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); }
+.ledger-section { padding: 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.ledger-section h4 { margin: 0 0 2px; font-size: 12px; }
+.ledger-section label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+.ledger-section input[type="number"] { width: 110px; background: #101216; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+.ledger-entry { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed var(--border); }
 .ring-wrap { display: flex; gap: 8px; align-items: center; }
 .ring-bg { fill: none; stroke: #2c313a; stroke-width: 4; }
 .ring-fg { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }
