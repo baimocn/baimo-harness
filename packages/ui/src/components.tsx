@@ -97,7 +97,7 @@ export function TopBar(props: {
       </div>
       {mode === "yolo" && (
         <div className="topbar-alert" data-testid="yolo-alert">
-          YOLO 模式：全放开。本块仅记录模式状态，审批拦截尚未接入（下一块）。
+          YOLO 模式：全放开。权限模式仅记录状态，审批拦截在阶段 2 控制簇接入。
         </div>
       )}
     </header>
@@ -487,6 +487,7 @@ export function Composer(props: {
   disabledHint: string | null;
   stats: SessionStatsDto | null;
   onSend: (text: string) => void;
+  onStop: () => void;
 }) {
   const [text, setText] = useState("");
   const send = () => {
@@ -515,14 +516,26 @@ export function Composer(props: {
       />
       <div className="composer-side">
         <ContextRing stats={props.stats} />
-        <button
-          type="button"
-          data-testid="composer-send"
-          disabled={!props.canSend || text.trim() === ""}
-          onClick={send}
-        >
-          {props.running ? "运行中…" : "发送"}
-        </button>
+        {props.running ? (
+          <button
+            type="button"
+            data-testid="composer-stop"
+            className="btn-stop"
+            onClick={props.onStop}
+            title="停止当前运行（RPC abort）：运行以「已停止」收尾，不记完成"
+          >
+            停止
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-testid="composer-send"
+            disabled={!props.canSend || text.trim() === ""}
+            onClick={send}
+          >
+            发送
+          </button>
+        )}
       </div>
     </div>
   );

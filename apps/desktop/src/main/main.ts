@@ -220,7 +220,9 @@ function wireHandle(handle: SessionHandle): void {
 const MILESTONE_LABELS: Record<string, string> = {
   session_opened: "会话打开",
   handshake: "握手完成",
+  session_resumed: "会话续接",
   run_settled: "检查点 · 运行完成",
+  run_stopped: "检查点 · 已停止",
   run_aborted: "运行异常终止",
   run_timeout: "运行超时",
   process_exit: "Pi 进程退出",
@@ -282,11 +284,15 @@ function registerIpc(): void {
 
   ipcMain.handle("session:prompt", (_e, id: string, message: string) => {
     const handle = live.get(id);
-    if (!handle) return { accepted: false, error: "会话未在运行（历史只读）" };
+    if (!handle) return { accepted: false, error: "会话未在运行（历史会话请先点「继续会话」）" };
     if (handle.busy) return { accepted: false, error: "会话忙：上一轮尚未结算" };
     handle.prompt(message).then(
-      () => {
-        send("session:run-settled", { sessionId: id, ok: true });
+      (outcome) => {
+        send("session:run-settled", {
+          sessionId: id,
+          ok: true,
+          stopped: outcome.disposition === "aborted",
+        });
         void pushStats(id);
       },
       (err: unknown) => {
@@ -300,6 +306,30 @@ function registerIpc(): void {
       },
     );
     return { accepted: true };
+  });
+
+  ipcMain.handle("session:resume", async (_e, id: string) => {
+    const existing = live.get(id);
+    if (existing) return { meta: toDto(existing.meta), live: true };
+    const meta = host.listSessions().find((m) => m.id === id);
+    if (!meta) throw new Error(`未知会话: ${id}`);
+    const model = meta.modelRef ?? selectedModel();
+    const handle = await host.resumeSession(id, {
+      piArgs: model
+        ? ["--provider", model.provider, "--model", model.modelId]
+        : [],
+    });
+    live.set(handle.id, handle);
+    wireHandle(handle);
+    activeSessionId = id;
+    return { meta: toDto(handle.meta), live: true };
+  });
+
+  ipcMain.handle("session:abort", async (_e, id: string) => {
+    const handle = live.get(id);
+    if (!handle) return { aborted: false };
+    const aborted = await handle.abort();
+    return { aborted };
   });
 
   ipcMain.handle("session:close", async (_e, id: string) => {

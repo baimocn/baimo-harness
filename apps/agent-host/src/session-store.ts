@@ -28,6 +28,12 @@ export interface SessionMeta {
   workspaceDir: string;
   /** Pi 侧会话 id（握手后回填），与宿主 id 分离。 */
   piSessionId: string | null;
+  /**
+   * Pi 原生会话文件路径（握手后回填）：宿主给每个会话分配独立 --session-dir，
+   * Pi 的落盘会话文件就在其中；续接（resume）时以 --session 指回此文件。
+   * 旧会话（--no-session 时代）无此文件，不可续接（resume 时大声报错）。
+   */
+  piSessionFile: string | null;
   /** 只记通道与模型，不记任何账号标识（设计文档 6.2）。 */
   modelRef: { provider: string; modelId: string } | null;
   createdAt: string;
@@ -95,6 +101,7 @@ export class SessionStore {
       title: input.title,
       workspaceDir: input.workspaceDir,
       piSessionId: null,
+      piSessionFile: null,
       modelRef: input.modelRef ?? null,
       createdAt: now,
       updatedAt: now,
@@ -214,6 +221,8 @@ export class SessionStore {
     if (!meta || typeof meta.id !== "string" || typeof meta.eventCount !== "number") {
       throw new SessionStoreError(`会话元数据结构非法: ${metaPath}`, { sessionId: id });
     }
+    // 旧版元数据没有 piSessionFile 字段：补 null（表示该会话不可续接），不报错。
+    if (typeof meta.piSessionFile !== "string") meta.piSessionFile = null;
     return meta;
   }
 

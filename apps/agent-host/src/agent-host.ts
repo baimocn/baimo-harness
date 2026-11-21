@@ -51,7 +51,11 @@ export interface OpenSessionOptions {
 }
 
 export interface PromptOutcome {
-  /** Pi 对 prompt 的处置：handled = 未起运行；其余为已启动并结算。 */
+  /**
+   * Pi 对 prompt 的处置：handled = 未起运行；started = 已启动并结算；
+   * aborted = 用户经 abort() 停止，运行以 agent_settled 收尾但按「已停止」记账，
+   * 绝不冒充正常完成（落盘 lifecycle 为 run_stopped 而非 run_settled）。
+   */
   disposition: string;
   /** 本轮收到的会话事件数（不含 response 本身）。 */
   eventsReceived: number;
@@ -61,6 +65,8 @@ export interface PromptOutcome {
 interface ActiveRun {
   eventsReceived: number;
   lastEventType: string | null;
+  /** 用户已请求停止：结算时按 run_stopped 记账（见 PromptOutcome.aborted）。 */
+  abortRequested: boolean;
   resolve: (outcome: PromptOutcome) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout | null;
@@ -177,6 +183,7 @@ export class SessionHandle extends EventEmitter {
       const run: ActiveRun = {
         eventsReceived: 0,
         lastEventType: null,
+        abortRequested: false,
         resolve,
         reject,
         timer: null,
@@ -201,6 +208,22 @@ export class SessionHandle extends EventEmitter {
       }
       this.run = run;
     });
+  }
+
+  /**
+   * 停止当前运行（RPC abort）：Pi 中止当前操作并等会话空闲后才回响应，
+   * 运行仍以 agent_settled 收尾，但本轮按「已停止」结算（disposition=aborted，
+   * 落盘 run_stopped）。无运行在进行时返回 false（不假装停了什么）。
+   * 注意：abort 命令的响应要等 Pi 空闲，若模型层迟迟不理会中止信号，
+   * 本方法会等到 RPC 请求超时才以 RpcTimeoutError 显形——不静默。
+   */
+  async abort(): Promise<boolean> {
+    const run = this.run;
+    if (!run) return false;
+    run.abortRequested = true;
+    this.store.append(this.id, "lifecycle", { event: "run_stop_requested" });
+    await this.client.request({ type: "abort" });
+    return true;
   }
 
   /** 立即杀死子进程（看门狗/测试用）；运行中会触发异常终止结算。 */
@@ -240,6 +263,19 @@ export class SessionHandle extends EventEmitter {
     if (record.type === "agent_settled") {
       this.run = null;
       if (run.timer) clearTimeout(run.timer);
+      if (run.abortRequested) {
+        // 用户停止：Pi 仍以 agent_settled 收尾（实测），但记账必须是「已停止」。
+        this.store.append(this.id, "lifecycle", {
+          event: "run_stopped",
+          eventsReceived: run.eventsReceived,
+        });
+        run.resolve({
+          disposition: "aborted",
+          eventsReceived: run.eventsReceived,
+          settled: true,
+        });
+        return;
+      }
       this.store.append(this.id, "lifecycle", {
         event: "run_settled",
         eventsReceived: run.eventsReceived,
@@ -306,6 +342,11 @@ export class AgentHost extends EventEmitter {
     this.started = true;
   }
 
+  /** 每个宿主会话一个独立的 Pi 会话目录（--session-dir），互不干扰、可按会话定位。 */
+  private piSessionDir(sessionId: string): string {
+    return join(this.config.dataDir, "pi-sessions", sessionId);
+  }
+
   /** 打开一个新会话：建落盘记录 → 拉起 Pi 子进程 → get_state 握手。 */
   async openSession(opts: OpenSessionOptions = {}): Promise<SessionHandle> {
     if (!this.started) await this.start();
@@ -316,16 +357,58 @@ export class AgentHost extends EventEmitter {
       modelRef: opts.modelRef ?? null,
     });
     this.store.append(meta.id, "lifecycle", { event: "session_opened" });
+    return this.attachProcess(meta, opts.piArgs ?? [], "session_opened");
+  }
 
+  /**
+   * 续接一个已落盘的历史会话：用元数据里记录的 Pi 会话文件重新拉起子进程
+   * （--session 指回原文件），握手校验后会话恢复 live，可继续发 prompt，
+   * 且模型请求会带上此前的完整上下文（Pi 原生会话续接，实测验证）。
+   * 无 Pi 会话文件的旧会话（--no-session 时代）抛 SESSION_NOT_RESUMABLE，不假装续接。
+   */
+  async resumeSession(
+    sessionId: string,
+    opts: { piArgs?: string[] } = {},
+  ): Promise<SessionHandle> {
+    if (!this.started) await this.start();
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+    const meta = this.store.getMeta(sessionId);
+    if (!meta.piSessionFile) {
+      throw new AgentHostError(
+        "SESSION_NOT_RESUMABLE",
+        `会话 ${sessionId} 没有 Pi 会话文件（可能是旧版临时会话），无法续接`,
+        { sessionId },
+      );
+    }
+    this.store.append(sessionId, "lifecycle", { event: "session_resume_requested" });
+    return this.attachProcess(
+      meta,
+      ["--session", meta.piSessionFile, ...(opts.piArgs ?? [])],
+      "session_resumed",
+    );
+  }
+
+  /** 拉起 Pi 子进程并完成握手；新建与续接共用。握手后回填 piSessionId/piSessionFile。 */
+  private async attachProcess(
+    meta: SessionMeta,
+    extraArgs: string[],
+    lifecycleEvent: string,
+  ): Promise<SessionHandle> {
     let proc: PiProcess;
     try {
       proc = await PiProcess.start({
         cliPath: this.config.piCliPath,
-        cwd: workspaceDir,
+        cwd: meta.workspaceDir,
         agentDir: this.config.piAgentDir,
         offline: this.config.offline,
         env: this.config.env,
-        args: ["--no-session", ...this.config.extraPiArgs, ...(opts.piArgs ?? [])],
+        args: [
+          "--session-dir",
+          this.piSessionDir(meta.id),
+          ...this.config.extraPiArgs,
+          ...extraArgs,
+        ],
       });
     } catch (err) {
       this.store.updateMeta(meta.id, { status: "aborted" });
@@ -342,11 +425,26 @@ export class AgentHost extends EventEmitter {
 
     try {
       const state = await handle.getState();
-      const piSessionId =
-        (state.data as { sessionId?: string } | undefined)?.sessionId ?? null;
-      this.store.updateMeta(meta.id, { piSessionId });
-      this.store.append(meta.id, "lifecycle", { event: "handshake", piSessionId });
+      const data = state.data as
+        | { sessionId?: string; sessionFile?: string }
+        | undefined;
+      const piSessionId = data?.sessionId ?? null;
+      const piSessionFile = data?.sessionFile ?? null;
+      this.store.updateMeta(meta.id, { piSessionId, piSessionFile, status: "live" });
+      this.store.append(meta.id, "lifecycle", {
+        event: "handshake",
+        piSessionId,
+        via: lifecycleEvent,
+      });
+      if (lifecycleEvent === "session_resumed") {
+        this.store.append(meta.id, "lifecycle", {
+          event: "session_resumed",
+          piSessionId,
+          piSessionFile,
+        });
+      }
     } catch (err) {
+      this.sessions.delete(meta.id);
       this.store.updateMeta(meta.id, { status: "aborted" });
       proc.kill("SIGKILL");
       throw err;

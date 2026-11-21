@@ -100,14 +100,28 @@ test("工具卡生命周期：start 建卡（摘要=命令）→ end 落结果�
   assert.equal(failed.status, "error");
 });
 
-test("agent_settled：运行结算、计数、检查点标记", () => {
+test("agent_settled：只结算与计数；完成标记由落盘 lifecycle run_settled 产生", () => {
   let s = applyHostEvent(initialStreamState, { type: "agent_start" });
   s = applyHostEvent(s, { type: "agent_settled", aborted: false });
   assert.equal(s.running, false);
   assert.equal(s.settledRuns, 1);
+  // agent_settled 本身不产标记（否则回放时与 lifecycle 记录双标）
+  assert.equal(s.items.find((i) => i.kind === "marker"), undefined);
+  s = applyHostEvent(s, { type: "lifecycle", event: "run_settled" });
   const marker = s.items.find((i) => i.kind === "marker");
   assert.ok(marker);
   assert.match(marker.label, /检查点/);
+});
+
+test("已停止：agent_settled + lifecycle run_stopped → 只有「已停止」标记，绝不标完成", () => {
+  let s = applyHostEvent(initialStreamState, { type: "agent_start" });
+  s = applyHostEvent(s, { type: "agent_settled", aborted: true });
+  s = applyHostEvent(s, { type: "lifecycle", event: "run_stopped" });
+  assert.equal(s.running, false);
+  const markers = s.items.filter((i) => i.kind === "marker");
+  assert.equal(markers.length, 1);
+  assert.match(markers[0].label, /已停止/);
+  assert.ok(!markers.some((m) => /完成/.test(m.label)));
 });
 
 test("完整轮次回放：用户→流式文本→工具→结算（与 agent-host 真实事件同形）", () => {

@@ -147,7 +147,9 @@ function nextId(state: StreamState): { id: string; seq: number } {
 /** 生命周期事件 → 流内标记（只有真实落盘/真实发生的事件才会走到这里，不造假检查点）。 */
 const LIFECYCLE_MARKERS: Record<string, { label: string; tone: "info" | "ok" | "error" }> = {
   session_opened: { label: "会话打开", tone: "info" },
+  session_resumed: { label: "会话已续接（上下文恢复）", tone: "info" },
   run_settled: { label: "检查点 · 一轮运行完成并落盘", tone: "ok" },
+  run_stopped: { label: "已停止 · 本轮运行被用户停止", tone: "info" },
   run_aborted: { label: "运行异常终止（未结算）", tone: "error" },
   process_exit: { label: "Pi 进程退出", tone: "error" },
   session_closed: { label: "会话关闭", tone: "info" },
@@ -282,19 +284,11 @@ export function applyHostEvent(state: StreamState, raw: unknown): StreamState {
       };
     }
     case "agent_settled": {
+      // 只做结算（停运行、计数）：完成/停止标记一律由落盘 lifecycle 记录产生
+      // （run_settled / run_stopped），保证实时与回放同口径、且已停止的运行
+      // 绝不被标成「完成」。实时流由主进程在 run-settled 推送时注入 lifecycle。
       const s = closeAssistant(state);
-      const { id, seq } = nextId(s);
-      return {
-        ...pushItem(s, {
-          kind: "marker",
-          id,
-          label: "检查点 · 一轮运行完成并落盘",
-          tone: "ok",
-        }),
-        seq,
-        running: false,
-        settledRuns: s.settledRuns + 1,
-      };
+      return { ...s, running: false, settledRuns: s.settledRuns + 1 };
     }
     default:
       return state;

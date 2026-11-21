@@ -30,6 +30,8 @@ const api: BaimoBridge = {
   history: (id: string) => ipcRenderer.invoke("session:history", id),
   prompt: (id: string, message: string) =>
     ipcRenderer.invoke("session:prompt", id, message),
+  resumeSession: (id: string) => ipcRenderer.invoke("session:resume", id),
+  abortSession: (id: string) => ipcRenderer.invoke("session:abort", id),
   closeSession: (id: string) => ipcRenderer.invoke("session:close", id),
   trashSession: (id: string) => ipcRenderer.invoke("session:trash", id),
   restoreSession: (id: string) => ipcRenderer.invoke("session:restore", id),

@@ -84,6 +84,8 @@ export interface SessionEventPayload {
 export interface RunSettledPayload {
   sessionId: string;
   ok: boolean;
+  /** 本轮是被用户停止的（agent-host 以 disposition=aborted 结算）：界面记「已停止」，不记完成。 */
+  stopped?: boolean;
   error?: string;
   code?: string;
 }
@@ -112,6 +114,10 @@ export interface BaimoBridge {
     id: string,
     message: string,
   ): Promise<{ accepted: boolean; error?: string }>;
+  /** 续接历史会话：重新拉起子进程并指回原 Pi 会话文件，成功后会话恢复 live。 */
+  resumeSession(id: string): Promise<{ meta: SessionMetaDto; live: boolean }>;
+  /** 停止当前运行：返回是否确有运行被停止（无运行则 false，不假装）。 */
+  abortSession(id: string): Promise<{ aborted: boolean }>;
   closeSession(id: string): Promise<void>;
   trashSession(id: string): Promise<void>;
   restoreSession(id: string): Promise<void>;

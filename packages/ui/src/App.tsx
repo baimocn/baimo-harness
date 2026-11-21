@@ -97,7 +97,13 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       updateStream(e.sessionId, e.record),
     );
     const offSettled = bridge.onRunSettled(async (e) => {
-      if (!e.ok) {
+      if (e.ok) {
+        // 完成/停止标记与回放同口径：由落盘 lifecycle 驱动，这里按结算结果注入同一事件
+        updateStream(e.sessionId, {
+          type: "lifecycle",
+          event: e.stopped ? "run_stopped" : "run_settled",
+        });
+      } else {
         updateStream(e.sessionId, {
           type: "run_error",
           message: e.error ?? "运行异常终止（未以 agent_settled 结算）",
@@ -194,6 +200,26 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     }
   };
 
+  const handleStop = async () => {
+    if (!activeId) return;
+    await bridge.abortSession(activeId).catch(() => undefined);
+    // 结算（run-settled 推送）会把流带回空闲并落「已停止」标记，这里不抢先改状态
+  };
+
+  const handleResume = async () => {
+    if (!activeId) return;
+    try {
+      await bridge.resumeSession(activeId);
+      await refreshSnapshot();
+      if (!streams.has(activeId)) await loadHistory(activeId);
+    } catch (err) {
+      updateStream(activeId, {
+        type: "run_error",
+        message: `续接失败：${String(err)}`,
+      });
+    }
+  };
+
   const handleMode = async (mode: PermissionMode) => {
     await bridge.setMode(mode, activeId ?? undefined);
     setSnapshot((prev) => (prev ? { ...prev, permissionMode: mode } : prev));
@@ -241,11 +267,11 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const disabledHint = !activeMeta
     ? "先新建或选择一个会话"
     : !activeMeta.live
-      ? "历史会话（只读）：子进程未运行，不能继续发送"
+      ? "历史会话（只读）：点上方「继续会话」续接后可继续发送"
       : activeId && exited.has(activeId)
         ? "子进程已退出，不能发送"
         : running
-          ? "运行中，等待本轮结算…"
+          ? "运行中：可点「停止」结束本轮，或等待结算…"
           : null;
 
   return (
@@ -270,7 +296,15 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         <main className="center">
           {activeMeta && !activeMeta.live && (
             <div className="readonly-banner" data-testid="readonly-banner">
-              历史会话（只读）：内容来自落盘记录，子进程未运行，不能继续发送。
+              历史会话（只读）：内容来自落盘记录，子进程未运行。
+              <button
+                type="button"
+                data-testid="resume-session"
+                onClick={handleResume}
+              >
+                继续会话
+              </button>
+              续接后可继续发送，上下文按 Pi 会话文件恢复。
             </div>
           )}
           <StreamView
@@ -292,6 +326,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
             disabledHint={disabledHint}
             stats={activeId ? (statsMap.get(activeId) ?? null) : null}
             onSend={handleSend}
+            onStop={handleStop}
           />
         </main>
         <RightPanel
