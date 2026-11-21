@@ -38,6 +38,16 @@ test("preload 只暴露白名单桥，不透传 ipcRenderer", () => {
   assert.match(main, /sandbox: true/);
 });
 
+test("主进程关掉 Chromium 自带外发（拼写词典/组件更新/域名可靠性，K-04 红线）", () => {
+  const main = read("apps/desktop/src/main/main.ts");
+  assert.match(main, /spellcheck: false/);
+  assert.match(main, /setSpellCheckerEnabled\(false\)/);
+  assert.match(main, /setSpellCheckerLanguages\(\[\]\)/);
+  assert.match(main, /appendSwitch\("disable-component-update"\)/);
+  assert.match(main, /appendSwitch\("disable-domain-reliability"\)/);
+  assert.match(main, /appendSwitch\("disable-background-networking"\)/);
+});
+
 test("根脚本串联 ui 单测与桌面 E2E", () => {
   const pkg = readJson("package.json");
   assert.match(pkg.scripts["test:e2e"], /packages\/ui\/test/);

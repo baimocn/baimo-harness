@@ -12,7 +12,7 @@
  *   事件推给渲染层，裁决经 approval:respond 回注 extension_ui_response。
  * - 退出时先关宿主（子进程逐级优雅退出）再退应用，不留孤儿 Pi 进程。
  */
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, session } from "electron";
 import {
   existsSync,
   mkdirSync,
@@ -53,6 +53,21 @@ import type {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(here, "..", "..", "..");
+
+/*
+ * 零外发红线（K-04 抓包审计实测）：壳层 Chromium 会在新 profile
+ * 启动时自行联网下载英文拼写词典（GET redirector.gvt1.com/
+ * edgedl/chrome/dict/en-us-10-2.bdic，NetLog 实测定位）——不是应用
+ * 代码发起的，但按「除配置的模型端点外零对外连接」的口径同样不
+ * 允许。正解是关掉拼写检查（createWindow 的 webPreferences.
+ * spellcheck=false + 下面的会话级禁用）；这里再在启动最早期关掉
+ * 组件更新、域名可靠性上报与后台联网服务，作为纵深防御。行为由
+ * tests/regression/telemetry-capture.test.mjs 的抓包回归守住
+ * （全过程见 docs/test-runs/2026-11-21-telemetry-capture.md）。
+ */
+app.commandLine.appendSwitch("disable-component-update");
+app.commandLine.appendSwitch("disable-domain-reliability");
+app.commandLine.appendSwitch("disable-background-networking");
 
 const STUB_REF = { provider: "stub", modelId: "stub-model" };
 
@@ -1314,6 +1329,10 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 关拼写检查：Chromium 会为默认语言联网下载拼写词典
+      // （redirector.gvt1.com/edgedl/chrome/dict/*.bdic），属壳层
+      // 自带外发，违反零外发红线（K-04 抓包审计实测，见文首注释）。
+      spellcheck: false,
     },
   });
   mainWindow.on("closed", () => {
@@ -1332,6 +1351,11 @@ async function boot(): Promise<void> {
 }
 
 app.whenReady().then(() => {
+  // 防拼写词典下载外发（K-04 实测定位）：词典下载由建窗口/会话创建
+  // 触发，故必须在建窗口前关拼写检查并清空词典语言列表——只关
+  // enabled 不够（实测仍会下载），语言列表为空才没有要下的词典。
+  session.defaultSession.setSpellCheckerEnabled(false);
+  session.defaultSession.setSpellCheckerLanguages([]);
   boot().catch((err) => {
     console.error("白墨 Harness 启动失败:", err);
     app.exit(1);

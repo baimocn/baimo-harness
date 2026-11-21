@@ -74,5 +74,5 @@ agent-host 拉起每个 Pi 子进程时，三重保险叠加（任一生效即�
 
 ## 6. 验收对应（K-04）
 
-- 本轮：代码审计（本文件）+ RPC 冒烟以策略 env 跑通 —— 证明关闭方法可执行、RPC 形态下无遥测路径。
-- 待阶段 1 壳层成型后补：按验收标准做**抓包审计**（运行时全部外发请求抓包，除用户配置的模型端点外为零），纳入 `test:regression`。
+- 阶段 0：代码审计（本文件）+ RPC 冒烟以策略 env 跑通 —— 证明关闭方法可执行、RPC 形态下无遥测路径。
+- **抓包审计已完成（2026-11-21，阶段 3 · 模块 4）：通过。** 完整桌面应用跑一轮真实任务（本地桩模型）期间，`ss` 100ms 轮询抓到的应用进程树连接除本地桩端点外全部为环回内部连接，非环回远端为零；Pi→桩端点连接被真实抓到 18 次（敏感度自证）。审计中曾抓到并修复一处壳层自带外发：Chromium 拼写检查的英文词典下载（redirector.gvt1.com）——已通过建窗口前关拼写检查 + 清空词典语言列表根除，日志代理探针 3 次复验零请求。方法、完整实录、证据摘要与局限见 `docs/test-runs/2026-11-21-telemetry-capture.md`，原始证据 `docs/test-runs/assets/2026-11-21-stage3/capture-evidence.json`；脚本 `tests/capture/telemetry-capture.mjs` 已纳入 `test:regression`（`tests/regression/telemetry-capture.test.mjs`），每次回归复跑刷新证据。

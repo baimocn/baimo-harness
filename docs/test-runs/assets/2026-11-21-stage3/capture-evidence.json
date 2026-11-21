@@ -1,0 +1,71 @@
+{
+  "auditedAt": "2026-11-21T13:07:22.274Z",
+  "method": "ss -tanpH/-uanpH 100ms 轮询 + ps 进程树归属（Electron 主进程全部后代，Pi 子进程单独标记）",
+  "appRootPid": 69072,
+  "stubEndpoint": "127.0.0.1:43229",
+  "polls": 28,
+  "rawObservations": 130,
+  "driveError": null,
+  "endpoints": [
+    {
+      "proto": "tcp",
+      "state": "LISTEN",
+      "local": "127.0.0.1:46361",
+      "remote": "0.0.0.0:*",
+      "owner": "electron-tree",
+      "observations": 3
+    },
+    {
+      "proto": "tcp",
+      "state": "LISTEN",
+      "local": "127.0.0.1:34083",
+      "remote": "0.0.0.0:*",
+      "owner": "electron-tree",
+      "observations": 28
+    },
+    {
+      "proto": "tcp",
+      "state": "ESTAB",
+      "local": "127.0.0.1:46361",
+      "remote": "127.0.0.1:38580",
+      "owner": "electron-tree",
+      "observations": 3
+    },
+    {
+      "proto": "tcp",
+      "state": "ESTAB",
+      "local": "127.0.0.1:34083",
+      "remote": "127.0.0.1:53954",
+      "owner": "electron-tree",
+      "observations": 28
+    },
+    {
+      "proto": "tcp",
+      "state": "LISTEN",
+      "local": "127.0.0.1:46361",
+      "remote": "0.0.0.0:*",
+      "owner": "pi",
+      "observations": 25
+    },
+    {
+      "proto": "tcp",
+      "state": "ESTAB",
+      "local": "127.0.0.1:46361",
+      "remote": "127.0.0.1:38580",
+      "owner": "pi",
+      "observations": 25
+    },
+    {
+      "proto": "tcp",
+      "state": "ESTAB",
+      "local": "127.0.0.1:41716",
+      "remote": "127.0.0.1:43229",
+      "owner": "pi",
+      "observations": 18
+    }
+  ],
+  "piToStubObservations": 18,
+  "nonLoopbackAppTree": [],
+  "verdict": "pass",
+  "limitations": "轮询式抓包可能漏掉存活 <100ms 的短连接；结论与静态代码审计（RPC 模式无遥测代码路径）互为印证。"
+}
