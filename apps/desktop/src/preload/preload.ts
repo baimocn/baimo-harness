@@ -9,9 +9,12 @@ import type {
   ApprovalRequestDto,
   BaimoBridge,
   CheckpointDto,
+  IdleQueueViewDto,
+  IdleTaskDto,
   PermissionMode,
   PlanEditRequestDto,
   PlanRequestDto,
+  PluginInfoDto,
   ProcessExitPayload,
   RollbackReportDto,
   RunSettledPayload,
@@ -98,6 +101,22 @@ const api: BaimoBridge = {
     subscribe("plan:edit-requested", cb),
   onPlanChanged: (cb: (e: { sessionId: string }) => void) =>
     subscribe("plan:changed", cb),
+  getIdleQueue: () => ipcRenderer.invoke("idle:get"),
+  enqueueIdleTask: (prompt: string, target: IdleTaskDto["target"]) =>
+    ipcRenderer.invoke("idle:enqueue", prompt, target),
+  removeIdleTask: (itemId: string) => ipcRenderer.invoke("idle:remove", itemId),
+  moveIdleTask: (itemId: string, dir: -1 | 1) =>
+    ipcRenderer.invoke("idle:move", itemId, dir),
+  setIdleEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke("idle:set-enabled", enabled),
+  clearFinishedIdleTasks: () => ipcRenderer.invoke("idle:clear-finished"),
+  onIdleChanged: (cb: (e: IdleQueueViewDto) => void) =>
+    subscribe("idle:changed", cb),
+  listPlugins: () => ipcRenderer.invoke("plugins:list"),
+  setPluginEnabled: (fileName: string, enabled: boolean) =>
+    ipcRenderer.invoke("plugins:set-enabled", fileName, enabled),
+  onPluginsChanged: (cb: (e: PluginInfoDto[]) => void) =>
+    subscribe("plugins:changed", cb),
   onSessionEvent: (cb: (e: SessionEventPayload) => void) =>
     subscribe("session:event", cb),
   onRunSettled: (cb: (e: RunSettledPayload) => void) =>

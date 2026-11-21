@@ -14,12 +14,15 @@ import type {
   CheckpointDto,
   CostViewDto,
   HostSnapshotDto,
+  IdleQueueViewDto,
+  IdleTaskDto,
   ModelPriceDto,
   PermissionMode,
   PlanEditRequestDto,
   PlanRequestDto,
   PlanSelectChoice,
   PlanViewDto,
+  PluginInfoDto,
   SessionMetaDto,
   SessionStatsDto,
   SteeringEntryDto,
@@ -73,6 +76,8 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     new Map(),
   );
   const [costView, setCostView] = useState<CostViewDto | null>(null);
+  const [idleView, setIdleView] = useState<IdleQueueViewDto | null>(null);
+  const [plugins, setPlugins] = useState<PluginInfoDto[] | null>(null);
   /** 已把「投递」呈现为执行流用户消息的条目 id（防实时推送与回放双份）。 */
   const deliveredInjectedRef = useRef<Map<string, Set<string>>>(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
@@ -138,6 +143,16 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     },
     [bridge],
   );
+
+  const loadIdle = useCallback(async () => {
+    const view = await bridge.getIdleQueue().catch(() => null);
+    if (view) setIdleView(view);
+  }, [bridge]);
+
+  const loadPlugins = useCallback(async () => {
+    const list = await bridge.listPlugins().catch(() => null);
+    if (list) setPlugins(list);
+  }, [bridge]);
 
   const loadQueue = useCallback(
     async (id: string) => {
@@ -228,6 +243,16 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     const offCost = bridge.onCostChanged((e) => {
       loadCost(e.sessionId).catch(() => undefined);
     });
+    const offIdle = bridge.onIdleChanged((view) => {
+      setIdleView(view);
+      // 闲时任务可能新建/续接会话：同步会话列表
+      refreshSnapshot().catch(() => undefined);
+    });
+    const offPlugins = bridge.onPluginsChanged((list) => {
+      setPlugins(list);
+    });
+    loadIdle().catch(() => undefined);
+    loadPlugins().catch(() => undefined);
     const offQueue = bridge.onQueueChanged((e) => {
       setQueuesMap((prev) => new Map(prev).set(e.sessionId, e.entries));
       // 投递发生的那一刻，把这条指令呈现为执行流里的一条用户消息（去向可见）；
@@ -277,8 +302,10 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       offPlanChanged();
       offQueue();
       offCost();
+      offIdle();
+      offPlugins();
     };
-  }, [bridge, loadCheckpoints, loadCost, loadHistory, loadPlan, refreshSnapshot, updateStream]);
+  }, [bridge, loadCheckpoints, loadCost, loadHistory, loadIdle, loadPlan, loadPlugins, refreshSnapshot, updateStream]);
 
   const allSessions = useMemo(() => {
     if (!snapshot) return [];
@@ -393,6 +420,67 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     }
     loadQueue(activeId).catch(() => undefined);
   };
+
+  /* ---------- M-14 闲时队列 ---------- */
+
+  const handleIdleEnqueue = async (
+    prompt: string,
+    target: IdleTaskDto["target"],
+  ) => {
+    const res = await bridge.enqueueIdleTask(prompt, target);
+    if (!res.ok) {
+      if (activeId) {
+        notice(activeId, `闲时任务投递失败：${res.error ?? "未知错误"}`, "error");
+      }
+    }
+    loadIdle().catch(() => undefined);
+  };
+
+  const handleIdleRemove = async (itemId: string) => {
+    const res = await bridge.removeIdleTask(itemId);
+    if (!res.ok && activeId) {
+      notice(activeId, `移除闲时任务失败：${res.error ?? "未知错误"}`, "error");
+    }
+    loadIdle().catch(() => undefined);
+  };
+
+  const handleIdleMove = async (itemId: string, dir: -1 | 1) => {
+    const res = await bridge.moveIdleTask(itemId, dir);
+    if (!res.ok && activeId) {
+      notice(activeId, `调整闲时任务顺序失败：${res.error ?? "未知错误"}`, "error");
+    }
+    loadIdle().catch(() => undefined);
+  };
+
+  const handleIdleSetEnabled = async (enabled: boolean) => {
+    await bridge.setIdleEnabled(enabled);
+    loadIdle().catch(() => undefined);
+  };
+
+  const handleIdleClearFinished = async () => {
+    await bridge.clearFinishedIdleTasks();
+    loadIdle().catch(() => undefined);
+  };
+
+  /* ---------- M-15 插件目录 ---------- */
+
+  const handlePluginToggle = async (fileName: string, enabled: boolean) => {
+    const res = await bridge.setPluginEnabled(fileName, enabled);
+    if (!res.ok && activeId) {
+      notice(activeId, `插件启停失败：${res.error ?? "未知错误"}`, "error");
+    }
+    loadPlugins().catch(() => undefined);
+  };
+
+  const idleLabel = !idleView
+    ? null
+    : idleView.haltedReason
+      ? "闲时队列：已停摆（预算阻塞）"
+      : !idleView.enabled
+        ? "闲时队列：关"
+        : idleView.items.some((i) => i.status === "running")
+          ? "闲时队列：执行中"
+          : `闲时队列：待命（排队 ${idleView.items.filter((i) => i.status === "queued").length}）`;
 
   const handleResume = async () => {
     if (!activeId) return;
@@ -692,6 +780,15 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
           costView={costView}
           onSavePricing={handleSavePricing}
           onSaveBudgets={handleSaveBudgets}
+          idleView={idleView}
+          activeSessionId={activeId}
+          onIdleEnqueue={handleIdleEnqueue}
+          onIdleRemove={handleIdleRemove}
+          onIdleMove={handleIdleMove}
+          onIdleSetEnabled={handleIdleSetEnabled}
+          onIdleClearFinished={handleIdleClearFinished}
+          plugins={plugins}
+          onPluginToggle={handlePluginToggle}
         />
       </div>
       <StatusBar
@@ -699,6 +796,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         rpcLabel={rpc.label}
         rpcState={rpc.state}
         dataDir={snapshot.dataDir}
+        idleLabel={idleLabel}
       />
       {activeId && pendingPlanEdits.get(activeId) && (
         <PlanEditorModal

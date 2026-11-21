@@ -43,6 +43,7 @@ import {
   type SteeringEntry,
   type SteeringKind,
 } from "./steering-store.js";
+import { IdleQueueStore } from "./idle-queue-store.js";
 
 /** 从 Pi 消息 content（string 或 [{type:"text",text}...]）抽纯文本。 */
 function extractMessageText(content: unknown): string {
@@ -820,6 +821,8 @@ export class AgentHost extends EventEmitter {
   private readonly steeringStore: SteeringStore;
   /** 成本账本（M-07）：<dataDir>/cost 下 pricing.json / budgets.json / ledger.jsonl。 */
   readonly costLedger: CostLedger;
+  /** 闲时队列落盘（M-14）：<dataDir>/idle-queue/queue.json。调度器由调用方按需构造并显式启动（D-01）。 */
+  readonly idleQueueStore: IdleQueueStore;
   private readonly sessions = new Map<string, SessionHandle>();
   private started = false;
 
@@ -830,6 +833,7 @@ export class AgentHost extends EventEmitter {
     this.store = new SessionStore(this.config.dataDir);
     this.steeringStore = new SteeringStore(this.config.dataDir);
     this.costLedger = new CostLedger(join(this.config.dataDir, "cost"));
+    this.idleQueueStore = new IdleQueueStore(this.config.dataDir);
   }
 
   /** 启动宿主：校验 Pi 设置（K-03）、准备数据目录与索引。 */
@@ -981,6 +985,14 @@ export class AgentHost extends EventEmitter {
 
   getLiveSession(sessionId: string): SessionHandle | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /** 任一 live 会话正在运行（闲时队列的「全局空闲」判定口径，M-14）。 */
+  hasBusyLiveSession(): boolean {
+    for (const handle of this.sessions.values()) {
+      if (handle.busy) return true;
+    }
+    return false;
   }
 
   /** 关闭全部活动会话与子进程。 */

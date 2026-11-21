@@ -1,0 +1,1 @@
+{"description":"注册 plugin_echo 工具：把文本转大写加 PLUGIN-ECHO 前缀返回。用于验证插件加载与生效。","name":"回声示例插件","version":"1.0.0"}

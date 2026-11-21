@@ -24,8 +24,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AgentHost,
+  IdleQueueRunner,
   approvalGateExtensionPath,
   planGateExtensionPath,
+  type IdleExecutor,
+  type PromptOutcome,
   type SessionHandle,
   type SessionMeta,
 } from "@baimo-harness/agent-host";
@@ -647,48 +650,166 @@ const MILESTONE_LABELS: Record<string, string> = {
   session_closed: "会话关闭",
 };
 
+/**
+ * 新建一个 live 会话（挂审批门/计划门/已启用插件，走完整机制）。
+ * activate=false 时不抢用户当前焦点（闲时队列在后台建会话用）。
+ */
+async function createLiveSession(
+  title?: string,
+  activate = true,
+): Promise<SessionHandle> {
+  const model = selectedModel();
+  // M-02：先备策略文件（模式=当前全局模式），进程挂审批门扩展
+  const gate = prepareGate(settings.value.permissionMode);
+  // M-03：计划策略文件（缺省未开启计划先行）与状态文件路径（扩展提交计划时创建）
+  const plan = preparePlan();
+  const handle = await host.openSession({
+    title: title ?? `新会话 ${new Date().toLocaleTimeString()}`,
+    workspaceDir,
+    piArgs: [
+      ...(model
+        ? ["--provider", model.provider, "--model", model.modelId]
+        : []),
+      ...gatePiArgs(),
+    ],
+    env: {
+      BAIMO_APPROVAL_POLICY: gate.policyFile,
+      BAIMO_PLAN_STATE: plan.stateFile,
+      BAIMO_PLAN_POLICY: plan.policyFile,
+    },
+    modelRef: model,
+  });
+  live.set(handle.id, handle);
+  wireHandle(handle);
+  if (activate) activeSessionId = handle.id;
+  settings.update({
+    perSessionMode: {
+      ...settings.value.perSessionMode,
+      [handle.id]: settings.value.permissionMode,
+    },
+    approvalKeys: {
+      ...settings.value.approvalKeys,
+      [handle.id]: gate.key,
+    },
+    planKeys: {
+      ...settings.value.planKeys,
+      [handle.id]: plan.key,
+    },
+  });
+  return handle;
+}
+
+/** 确保某会话有 live 进程：已有则复用，否则按落盘记录续接（挂门同新建）。 */
+async function ensureLiveSession(
+  id: string,
+  activate = true,
+): Promise<SessionHandle> {
+  const existing = live.get(id);
+  if (existing) return existing;
+  const meta = host.listSessions().find((m) => m.id === id);
+  if (!meta) throw new Error(`未知会话: ${id}`);
+  const model = meta.modelRef ?? selectedModel();
+  // M-02：续接同样挂审批门；策略文件按会话 key 找回（授权跨续接保留）
+  const policyFile = writePolicy(id);
+  // M-03：计划策略按会话 key 刷新（开关状态跨续接保留），状态文件同 key 找回
+  const planPolicyFile = writePlanPolicy(id);
+  const handle = await host.resumeSession(id, {
+    piArgs: [
+      ...(model
+        ? ["--provider", model.provider, "--model", model.modelId]
+        : []),
+      ...gatePiArgs(),
+    ],
+    env: {
+      BAIMO_APPROVAL_POLICY: policyFile,
+      BAIMO_PLAN_STATE: planStateFileFor(id),
+      BAIMO_PLAN_POLICY: planPolicyFile,
+    },
+  });
+  live.set(handle.id, handle);
+  wireHandle(handle);
+  if (activate) activeSessionId = id;
+  return handle;
+}
+
+/**
+ * 在 live 会话里跑一轮 prompt 并把结算推给渲染层（前台发送与闲时
+ * 执行共用同一条链路：检查点自动打点、run-settled 推送、统计刷新）。
+ * 结算结果返回给调用方；异常向上抛（前台路径自行吞掉只报界面，
+ * 闲时路径据此给任务记 failed/blocked）。
+ */
+async function runSessionPrompt(
+  id: string,
+  message: string,
+): Promise<PromptOutcome> {
+  const handle = live.get(id);
+  if (!handle) throw new Error("会话未在运行");
+  // M-06：运行开始先给工作区打快照（改动前状态），结算后再打一张（改动后状态）
+  autoSnapshot(id, "运行开始", "run_start");
+  try {
+    const outcome = await handle.prompt(message);
+    const fused = outcome.disposition === "budget_fused";
+    send("session:run-settled", {
+      sessionId: id,
+      ok: true,
+      stopped: outcome.disposition === "aborted",
+      // M-07：预算熔断如实呈现为熔断停止，绝不记正常完成
+      fused,
+      fuseMessage:
+        fused && outcome.fuse
+          ? `预算熔断（${outcome.fuse.scope === "run" ? "单次运行" : "单日"}）：成本 $${outcome.fuse.cost.toFixed(4)} 超过上限 $${outcome.fuse.cap.toFixed(4)}，运行已停止`
+          : undefined,
+    });
+    void pushStats(id);
+    return outcome;
+  } catch (err) {
+    const e = err as { message?: string; code?: string };
+    send("session:run-settled", {
+      sessionId: id,
+      ok: false,
+      error: e?.message ?? String(err),
+      code: e?.code,
+    });
+    throw err;
+  } finally {
+    autoSnapshot(id, "运行完成", "run_settled");
+  }
+}
+
+/* ---------- M-14 闲时队列：桌面执行器（与前台同一条链路） ---------- */
+
+const idleExecutor: IdleExecutor = async (item, ctl) => {
+  const handle =
+    item.target.kind === "session"
+      ? await ensureLiveSession(item.target.sessionId, false)
+      : await createLiveSession(item.target.title ?? "闲时任务", false);
+  ctl.noteSession(handle.id);
+  ctl.registerAbort(() => {
+    void handle.abort().catch(() => undefined);
+  });
+  const outcome = await runSessionPrompt(handle.id, item.prompt);
+  return {
+    sessionId: handle.id,
+    disposition: outcome.disposition,
+    eventsReceived: outcome.eventsReceived,
+  };
+};
+
+const idleRunner = new IdleQueueRunner(
+  host.idleQueueStore,
+  idleExecutor,
+  () => [...live.values()].some((h) => h.busy),
+  500,
+);
+idleRunner.on("changed", (state) => {
+  send("idle:changed", state);
+});
+
 function registerIpc(): void {
   ipcMain.handle("host:snapshot", () => snapshot());
 
   ipcMain.handle("session:create", async (_e, title?: string) => {
-    const model = selectedModel();
-    // M-02：先备策略文件（模式=当前全局模式），进程挂审批门扩展
-    const gate = prepareGate(settings.value.permissionMode);
-    // M-03：计划策略文件（缺省未开启计划先行）与状态文件路径（扩展提交计划时创建）
-    const plan = preparePlan();
-    const handle = await host.openSession({
-      title: title ?? `新会话 ${new Date().toLocaleTimeString()}`,
-      workspaceDir,
-      piArgs: [
-        ...(model
-          ? ["--provider", model.provider, "--model", model.modelId]
-          : []),
-        ...gatePiArgs(),
-      ],
-      env: {
-        BAIMO_APPROVAL_POLICY: gate.policyFile,
-        BAIMO_PLAN_STATE: plan.stateFile,
-        BAIMO_PLAN_POLICY: plan.policyFile,
-      },
-      modelRef: model,
-    });
-    live.set(handle.id, handle);
-    wireHandle(handle);
-    activeSessionId = handle.id;
-    settings.update({
-      perSessionMode: {
-        ...settings.value.perSessionMode,
-        [handle.id]: settings.value.permissionMode,
-      },
-      approvalKeys: {
-        ...settings.value.approvalKeys,
-        [handle.id]: gate.key,
-      },
-      planKeys: {
-        ...settings.value.planKeys,
-        [handle.id]: plan.key,
-      },
-    });
+    const handle = await createLiveSession(title);
     return toDto(handle.meta);
   });
 
@@ -730,68 +851,76 @@ function registerIpc(): void {
     const handle = live.get(id);
     if (!handle) return { accepted: false, error: "会话未在运行（历史会话请先点「继续会话」）" };
     if (handle.busy) return { accepted: false, error: "会话忙：上一轮尚未结算" };
-    // M-06：运行开始先给工作区打快照（改动前状态），结算后再打一张（改动后状态）
-    autoSnapshot(id, "运行开始", "run_start");
-    const runPromise = (async () => {
-      try {
-        const outcome = await handle.prompt(message);
-        const fused = outcome.disposition === "budget_fused";
-        send("session:run-settled", {
-          sessionId: id,
-          ok: true,
-          stopped: outcome.disposition === "aborted",
-          // M-07：预算熔断如实呈现为熔断停止，绝不记正常完成
-          fused,
-          fuseMessage:
-            fused && outcome.fuse
-              ? `预算熔断（${outcome.fuse.scope === "run" ? "单次运行" : "单日"}）：成本 $${outcome.fuse.cost.toFixed(4)} 超过上限 $${outcome.fuse.cap.toFixed(4)}，运行已停止`
-              : undefined,
-        });
-        void pushStats(id);
-      } catch (err) {
-        const e = err as { message?: string; code?: string };
-        send("session:run-settled", {
-          sessionId: id,
-          ok: false,
-          error: e?.message ?? String(err),
-          code: e?.code,
-        });
-      } finally {
-        autoSnapshot(id, "运行完成", "run_settled");
+    // M-14：前台任务优先——正在跑的闲时任务（别的会话）先让路回队列
+    const currentIdle = idleRunner.currentItem;
+    if (currentIdle && currentIdle.sessionId && currentIdle.sessionId !== id) {
+      idleRunner.preempt("前台任务优先：闲时任务已让路，空闲后自动续跑");
+    }
+    const runPromise = runSessionPrompt(id, message)
+      .catch(() => undefined)
+      .finally(() => {
         pendingRuns.delete(id);
-      }
-    })();
+      });
     pendingRuns.set(id, runPromise);
     return { accepted: true };
   });
 
   ipcMain.handle("session:resume", async (_e, id: string) => {
-    const existing = live.get(id);
-    if (existing) return { meta: toDto(existing.meta), live: true };
-    const meta = host.listSessions().find((m) => m.id === id);
-    if (!meta) throw new Error(`未知会话: ${id}`);
-    const model = meta.modelRef ?? selectedModel();
-    // M-02：续接同样挂审批门；策略文件按会话 key 找回（授权跨续接保留）
-    const policyFile = writePolicy(id);
-    // M-03：计划策略按会话 key 刷新（开关状态跨续接保留），状态文件同 key 找回
-    const planPolicyFile = writePlanPolicy(id);
-    const handle = await host.resumeSession(id, {
-      piArgs: [
-        ...(model
-          ? ["--provider", model.provider, "--model", model.modelId]
-          : []),
-        ...gatePiArgs(),
-      ],
-      env: {
-        BAIMO_APPROVAL_POLICY: policyFile,
-        BAIMO_PLAN_STATE: planStateFileFor(id),
-        BAIMO_PLAN_POLICY: planPolicyFile,
-      },
-    });
-    live.set(handle.id, handle);
-    wireHandle(handle);
-    activeSessionId = id;
+    const handle = await ensureLiveSession(id);
     return { meta: toDto(handle.meta), live: true };
+  });
+
+  /* ---------- 闲时队列（M-14） ---------- */
+
+  ipcMain.handle("idle:get", () => idleRunner.getState());
+
+  ipcMain.handle(
+    "idle:enqueue",
+    (_e, prompt: string, target: { kind: "new" } | { kind: "session"; sessionId: string }) => {
+      try {
+        const item = idleRunner.enqueue(prompt, target);
+        return { ok: true, item };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+
+  ipcMain.handle("idle:remove", (_e, itemId: string) => {
+    try {
+      idleRunner.remove(itemId);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  ipcMain.handle("idle:move", (_e, itemId: string, dir: -1 | 1) => {
+    try {
+      idleRunner.move(itemId, dir);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  ipcMain.handle("idle:set-enabled", (_e, enabled: boolean) => {
+    idleRunner.setEnabled(enabled);
+    return { ok: true };
+  });
+
+  ipcMain.handle("idle:clear-finished", () => {
+    const removed = idleRunner.clearFinished();
+    return { ok: true, removed };
   });
 
   ipcMain.handle("session:abort", async (_e, id: string) => {
@@ -1146,6 +1275,7 @@ let quitting = false;
 async function boot(): Promise<void> {
   await host.start();
   registerIpc();
+  idleRunner.start();
   await createWindow();
 }
 

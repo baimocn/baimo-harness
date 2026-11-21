@@ -11,11 +11,14 @@ import {
   type CheckpointDto,
   type CostViewDto,
   type HostSnapshotDto,
+  type IdleQueueViewDto,
+  type IdleTaskDto,
   type ModelPriceDto,
   type PermissionMode,
   type PlanSelectChoice,
   type PlanStateDto,
   type PlanViewDto,
+  type PluginInfoDto,
   type SessionMetaDto,
   type SessionStatsDto,
   type SteeringEntryDto,
@@ -216,7 +219,7 @@ export function SessionList(props: {
             </button>
           </div>
         ))}
-        <div className="sidebar-links dim">闲时队列 · 插件 · 设置（后续阶段）</div>
+        <div className="sidebar-links dim">闲时队列 · 插件在右栏页签（阶段 3 已接入）</div>
       </div>
     </aside>
   );
@@ -379,7 +382,247 @@ export function StreamView(props: {
 
 /* ---------------- 右栏 ---------------- */
 
-export type RightTab = "changes" | "files" | "checkpoints" | "plan" | "ledger";
+export type RightTab =
+  | "changes"
+  | "files"
+  | "checkpoints"
+  | "plan"
+  | "ledger"
+  | "idle"
+  | "plugins";
+
+/* ---------------- M-14 闲时队列面板 ---------------- */
+
+export const IDLE_STATUS_LABELS: Record<IdleTaskDto["status"], string> = {
+  queued: "排队中",
+  running: "执行中",
+  done: "已完成",
+  failed: "失败",
+  blocked: "已阻塞（预算）",
+  withdrawn: "已撤回",
+};
+
+/**
+ * 闲时队列面板（M-14）：投递任务、显式启停、逐条状态与去向。
+ * 任务执行走与前台完全相同的链路（检查点/审批/计划/成本熔断），
+ * 这里只负责排队与呈现，不提供任何绕过机制的开关。
+ */
+export function IdlePanel(props: {
+  view: IdleQueueViewDto | null;
+  activeSessionId: string | null;
+  onEnqueue: (prompt: string, target: IdleTaskDto["target"]) => void;
+  onRemove: (itemId: string) => void;
+  onMove: (itemId: string, dir: -1 | 1) => void;
+  onSetEnabled: (enabled: boolean) => void;
+  onClearFinished: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [target, setTarget] = useState<"new" | "session">("new");
+  const view = props.view;
+  if (!view) {
+    return (
+      <div data-testid="panel-idle">
+        <p className="dim pad">闲时队列加载中…</p>
+      </div>
+    );
+  }
+  const queuedCount = view.items.filter((i) => i.status === "queued").length;
+  const runningCount = view.items.filter((i) => i.status === "running").length;
+  return (
+    <div data-testid="panel-idle">
+      <div className="idle-head">
+        <label className="idle-enable-toggle">
+          <input
+            type="checkbox"
+            data-testid="idle-enable-toggle"
+            checked={view.enabled}
+            onChange={(e) => props.onSetEnabled(e.target.checked)}
+          />
+          启用闲时队列（全局空闲时自动执行）
+        </label>
+        <span className="dim">
+          未经启用绝不自启动（D-01）。排队 {queuedCount} 条
+          {runningCount > 0 ? ` · 执行中 ${runningCount} 条` : ""}。任务走与
+          前台相同的链路：检查点自动打点、审批/计划照常、成本入账、超预算熔断停摆。
+          前台任务到来时正在跑的闲时任务会让路回队列。
+        </span>
+      </div>
+      {view.haltedReason && (
+        <p className="idle-halted" data-testid="idle-halted">
+          队列已停摆：{view.haltedReason}（处理后重新勾选启用可续跑）
+        </p>
+      )}
+      <div className="idle-form">
+        <textarea
+          data-testid="idle-prompt-input"
+          value={text}
+          placeholder="不紧急的活丢进来：空闲时按序自动跑，如「把 README 补上安装章节」"
+          rows={3}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <div className="idle-form-row">
+          <select
+            data-testid="idle-target-select"
+            value={target}
+            onChange={(e) => setTarget(e.target.value as "new" | "session")}
+          >
+            <option value="new">在新会话执行</option>
+            <option value="session" disabled={!props.activeSessionId}>
+              在当前会话执行{props.activeSessionId ? "" : "（未选会话）"}
+            </option>
+          </select>
+          <button
+            type="button"
+            data-testid="idle-enqueue"
+            disabled={text.trim() === ""}
+            onClick={() => {
+              const t = text.trim();
+              if (!t) return;
+              props.onEnqueue(
+                t,
+                target === "session" && props.activeSessionId
+                  ? { kind: "session", sessionId: props.activeSessionId }
+                  : { kind: "new" },
+              );
+              setText("");
+            }}
+          >
+            加入队列
+          </button>
+          <button
+            type="button"
+            data-testid="idle-clear-finished"
+            onClick={props.onClearFinished}
+          >
+            清理已结束
+          </button>
+        </div>
+      </div>
+      <div className="idle-items">
+        {view.items.length === 0 && (
+          <p className="dim pad">队列为空：把不紧急的活丢进来，空闲时自动跑。</p>
+        )}
+        {view.items.map((it) => (
+          <div
+            key={it.id}
+            className={`idle-item idle-${it.status}`}
+            data-testid="idle-item"
+            data-status={it.status}
+          >
+            <div className="idle-item-main">
+              <span className="idle-item-prompt">{it.prompt}</span>
+              <span className="dim">
+                {IDLE_STATUS_LABELS[it.status]} ·{" "}
+                {it.target.kind === "new" ? "新会话" : "指定会话"}
+                {it.sessionId ? ` · 会话 ${it.sessionId.slice(0, 8)}` : ""}
+                {typeof it.eventsReceived === "number"
+                  ? ` · ${it.eventsReceived} 个事件`
+                  : ""}
+              </span>
+              {it.error && (
+                <span className="idle-item-error" data-testid="idle-item-error">
+                  {it.error}
+                </span>
+              )}
+              {it.note && <span className="dim">{it.note}</span>}
+            </div>
+            <div className="idle-item-actions">
+              {it.status === "queued" && (
+                <>
+                  <button
+                    type="button"
+                    data-testid="idle-move-up"
+                    onClick={() => props.onMove(it.id, -1)}
+                    title="在待执行序列里上移一位"
+                  >
+                    上移
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="idle-move-down"
+                    onClick={() => props.onMove(it.id, 1)}
+                    title="在待执行序列里下移一位"
+                  >
+                    下移
+                  </button>
+                </>
+              )}
+              {(it.status === "queued" || it.status === "blocked") && (
+                <button
+                  type="button"
+                  data-testid="idle-remove"
+                  onClick={() => props.onRemove(it.id)}
+                >
+                  移除
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- M-15 插件目录面板 ---------------- */
+
+/**
+ * 插件目录面板（M-15）：扫描数据目录 plugins/ 的结果原样呈现——
+ * 名称/版本/来源/启停状态；校验错误（语法、元数据损坏）红字显形，
+ * 绝不静默隐藏坏插件。启停对新建/续接会话生效，进行中会话不变
+ * （扩展在 Pi 进程启动时加载，口径在面板上明示）。
+ */
+export function PluginsPanel(props: {
+  plugins: PluginInfoDto[] | null;
+  onToggle: (fileName: string, enabled: boolean) => void;
+}) {
+  const plugins = props.plugins;
+  return (
+    <div data-testid="panel-plugins">
+      <p className="dim pad">
+        插件 = Pi 扩展（本地目录扫描）。启停落盘保存，对**新建或续接**的
+        会话生效，进行中的会话不变。加载失败的插件会让会话启动失败，
+        并在报错里点名该插件与原因——坏插件也会先在本面板显形。
+      </p>
+      {plugins === null && <p className="dim pad">插件目录加载中…</p>}
+      {plugins !== null && plugins.length === 0 && (
+        <p className="dim pad">插件目录为空：把扩展 .mjs 文件放进数据目录的 plugins/ 子目录即可。</p>
+      )}
+      {(plugins ?? []).map((p) => (
+        <div
+          key={p.fileName}
+          className="plugin-item"
+          data-testid="plugin-item"
+          data-file-name={p.fileName}
+          data-enabled={p.enabled}
+        >
+          <div className="plugin-main">
+            <span className="plugin-name">
+              {p.name}
+              {p.version ? <span className="dim"> v{p.version}</span> : null}
+            </span>
+            {p.description && <span className="dim">{p.description}</span>}
+            <span className="dim plugin-source">{p.source}</span>
+            {p.error && (
+              <span className="plugin-error" data-testid="plugin-error">
+                校验错误：{p.error}
+              </span>
+            )}
+          </div>
+          <label className="plugin-toggle">
+            <input
+              type="checkbox"
+              data-testid="plugin-toggle"
+              checked={p.enabled}
+              onChange={(e) => props.onToggle(p.fileName, e.target.checked)}
+            />
+            启用
+          </label>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /** 成本显示口径：null 必须是「未定价」，绝不显示成 $0。 */
 export function fmtCost(cost: number | null): string {
@@ -793,6 +1036,15 @@ export function RightPanel(props: {
   costView: CostViewDto | null;
   onSavePricing: (modelKey: string, price: ModelPriceDto) => void;
   onSaveBudgets: (budgets: BudgetDto) => void;
+  idleView: IdleQueueViewDto | null;
+  activeSessionId: string | null;
+  onIdleEnqueue: (prompt: string, target: IdleTaskDto["target"]) => void;
+  onIdleRemove: (itemId: string) => void;
+  onIdleMove: (itemId: string, dir: -1 | 1) => void;
+  onIdleSetEnabled: (enabled: boolean) => void;
+  onIdleClearFinished: () => void;
+  plugins: PluginInfoDto[] | null;
+  onPluginToggle: (fileName: string, enabled: boolean) => void;
 }) {
   const changes = props.state ? selectFileChanges(props.state) : [];
   const tabs: Array<{ id: RightTab; label: string }> = [
@@ -801,6 +1053,8 @@ export function RightPanel(props: {
     { id: "checkpoints", label: "检查点" },
     { id: "plan", label: "计划" },
     { id: "ledger", label: "账本" },
+    { id: "idle", label: "闲时" },
+    { id: "plugins", label: "插件" },
   ];
   const checkpoints = [...props.checkpoints].reverse();
   return (
@@ -944,6 +1198,23 @@ export function RightPanel(props: {
             costView={props.costView}
             onSavePricing={props.onSavePricing}
             onSaveBudgets={props.onSaveBudgets}
+          />
+        )}
+        {props.tab === "idle" && (
+          <IdlePanel
+            view={props.idleView}
+            activeSessionId={props.activeSessionId}
+            onEnqueue={props.onIdleEnqueue}
+            onRemove={props.onIdleRemove}
+            onMove={props.onIdleMove}
+            onSetEnabled={props.onIdleSetEnabled}
+            onClearFinished={props.onIdleClearFinished}
+          />
+        )}
+        {props.tab === "plugins" && (
+          <PluginsPanel
+            plugins={props.plugins}
+            onToggle={props.onPluginToggle}
           />
         )}
       </div>
@@ -1147,6 +1418,8 @@ export function StatusBar(props: {
   rpcLabel: string;
   rpcState: "on" | "off" | "error";
   dataDir: string;
+  /** M-14：闲时队列状态摘要（关/待命/执行中/停摆），D-01 后台指示。 */
+  idleLabel?: string | null;
 }) {
   return (
     <footer className="statusbar" data-testid="statusbar">
@@ -1163,6 +1436,11 @@ export function StatusBar(props: {
       <span className="badge-telemetry" title="agent-host 强制 PI_TELEMETRY=0 且 settings 写死 enableInstallTelemetry:false">
         零遥测 · 已强制关闭
       </span>
+      {props.idleLabel && (
+        <span data-testid="idle-status" title="闲时队列（M-14）：未经启用绝不自启动">
+          {props.idleLabel}
+        </span>
+      )}
       <span className="dim">会话存储：{props.dataDir}</span>
       <span className="spacer" />
       <span className="dim" data-testid="mode-note">

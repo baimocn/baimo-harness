@@ -182,6 +182,24 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .ledger-section label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
 .ledger-section input[type="number"] { width: 110px; background: #101216; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
 .ledger-entry { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed var(--border); }
+/* 闲时队列（M-14）与插件目录（M-15） */
+.idle-head { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.idle-halted { margin: 0; padding: 8px 10px; color: var(--err); background: rgba(255, 80, 80, 0.08); font-size: 12px; border-bottom: 1px solid var(--border); }
+.idle-form { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); }
+.idle-form textarea { background: #101216; color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px; font-size: 12px; resize: vertical; }
+.idle-form-row { display: flex; gap: 6px; align-items: center; }
+.idle-item { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px dashed var(--border); font-size: 12px; }
+.idle-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.idle-item-prompt { word-break: break-all; }
+.idle-item-error { color: var(--err); }
+.idle-item-actions { display: flex; gap: 4px; align-items: flex-start; flex-shrink: 0; }
+.idle-running .idle-item-prompt { color: var(--accent); }
+.plugin-item { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px dashed var(--border); font-size: 12px; }
+.plugin-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.plugin-source { word-break: break-all; }
+.plugin-error { color: var(--err); }
+.plugin-toggle { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+
 .ring-wrap { display: flex; gap: 8px; align-items: center; }
 .ring-bg { fill: none; stroke: #2c313a; stroke-width: 4; }
 .ring-fg { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }

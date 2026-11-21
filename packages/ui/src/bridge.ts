@@ -248,6 +248,57 @@ export interface ProcessExitPayload {
   signal: string | null;
 }
 
+/* ---------- M-14 闲时队列 ---------- */
+
+export type IdleTaskStatusDto =
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "blocked"
+  | "withdrawn";
+
+export interface IdleTaskDto {
+  id: string;
+  prompt: string;
+  target:
+    | { kind: "new"; title?: string }
+    | { kind: "session"; sessionId: string };
+  status: IdleTaskStatusDto;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  sessionId?: string;
+  disposition?: string;
+  eventsReceived?: number;
+  error?: string;
+  note?: string;
+}
+
+export interface IdleQueueViewDto {
+  /** 显式启用开关（D-01：未经启用，闲时任务绝不自启动）。 */
+  enabled: boolean;
+  /** 队列停摆原因（预算阻塞）；非 null 时在面板显形。 */
+  haltedReason: string | null;
+  items: IdleTaskDto[];
+}
+
+/* ---------- M-15 插件目录 ---------- */
+
+export interface PluginInfoDto {
+  /** 插件文件名（目录内唯一标识，启停按它落盘）。 */
+  fileName: string;
+  /** 展示名：sidecar 元数据优先，缺省用文件名。 */
+  name: string;
+  /** 来源（本地插件目录的绝对路径）。 */
+  source: string;
+  version?: string;
+  description?: string;
+  enabled: boolean;
+  /** 校验错误（语法/元数据损坏）：名称 + 原因，必须显形，不静默忽略。 */
+  error?: string;
+}
+
 export interface BaimoBridge {
   snapshot(): Promise<HostSnapshotDto>;
   createSession(title?: string): Promise<SessionMetaDto>;
@@ -345,6 +396,30 @@ export interface BaimoBridge {
   /** 保存预算上限（null = 不限）。 */
   setBudgets(budgets: BudgetDto): Promise<{ ok: boolean; error?: string }>;
   onCostChanged(cb: (e: { sessionId: string }) => void): () => void;
+  /** 闲时队列全量视图（M-14）。 */
+  getIdleQueue(): Promise<IdleQueueViewDto>;
+  /** 投递一条闲时任务（入队即落盘；是否执行取决于启用开关与全局空闲）。 */
+  enqueueIdleTask(
+    prompt: string,
+    target: IdleTaskDto["target"],
+  ): Promise<{ ok: boolean; item?: IdleTaskDto; error?: string }>;
+  removeIdleTask(itemId: string): Promise<{ ok: boolean; error?: string }>;
+  moveIdleTask(
+    itemId: string,
+    dir: -1 | 1,
+  ): Promise<{ ok: boolean; error?: string }>;
+  /** 显式启停闲时调度（D-01）；启用同时清停摆。 */
+  setIdleEnabled(enabled: boolean): Promise<{ ok: boolean }>;
+  clearFinishedIdleTasks(): Promise<{ ok: boolean; removed: number }>;
+  onIdleChanged(cb: (e: IdleQueueViewDto) => void): () => void;
+  /** 插件清单（M-15）：目录扫描 + sidecar 元数据 + 语法校验结果。 */
+  listPlugins(): Promise<PluginInfoDto[]>;
+  /** 启停插件（落盘注册表；对新建/续接的会话生效，进行中的会话不变）。 */
+  setPluginEnabled(
+    fileName: string,
+    enabled: boolean,
+  ): Promise<{ ok: boolean; error?: string }>;
+  onPluginsChanged(cb: (e: PluginInfoDto[]) => void): () => void;
   onQueueChanged(
     cb: (e: { sessionId: string; entries: SteeringEntryDto[] }) => void,
   ): () => void;

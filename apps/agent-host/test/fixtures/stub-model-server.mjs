@@ -36,6 +36,14 @@ export const STUB_PLAN_STEPS = [
 ];
 export const STUB_PLAN_STEP1_COMMAND = "echo stub-step-1";
 export const STUB_PLAN_STEP3_COMMAND = "echo stub-step-3";
+/**
+ * [[stub:plugin-echo]] 剧本（阶段 3 · 插件目录 E2E）：第一轮改发插件工具
+ * plugin_echo 的调用（该工具只由示例插件注册，Pi 本体没有）；
+ * 装了插件 → 工具结果带 PLUGIN-ECHO 标记；没装 → 未知工具错误结果。
+ * 第二轮（已有 tool 结果）照常收尾。
+ */
+export const STUB_PLUGIN_ECHO_TEXT = "hello plugin";
+export const STUB_PLUGIN_ECHO_RESULT = "PLUGIN-ECHO: HELLO PLUGIN";
 
 function sseChunk(delta, finishReason = null, usage = undefined) {
   const chunk = {
@@ -184,6 +192,13 @@ function decideTurn(parsed) {
       final: false,
       name: "bash",
       args: { command: STUB_DANGER_COMMAND },
+    };
+  }
+  if (userText.includes("[[stub:plugin-echo]]")) {
+    return {
+      final: false,
+      name: "plugin_echo",
+      args: { text: STUB_PLUGIN_ECHO_TEXT },
     };
   }
   const genericBash = userText.match(/\[\[stub:bash:([^\]]+)\]\]/);
