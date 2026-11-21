@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.toolchain/
+runtime/node_modules/
+# 本地数据与凭据永不入库
+data/
+*.local.json
+.env
+.env.*
