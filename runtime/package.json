@@ -1,0 +1,9 @@
+{
+  "name": "@baimo-harness/runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "随附运行时：打包分发的 Pi 内核（独立于根 workspaces 安装）",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.6.0"
+  }
+}
