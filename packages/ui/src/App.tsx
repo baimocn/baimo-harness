@@ -32,6 +32,7 @@ import {
   Composer,
   PlanCard,
   PlanEditorModal,
+  ReplayBar,
   RightPanel,
   SessionList,
   StatusBar,
@@ -49,6 +50,7 @@ import {
   type DiffMark,
   type StreamState,
 } from "./stream.js";
+import { ReplayCursor } from "./replay.js";
 
 export function App({ bridge }: { bridge: BaimoBridge }) {
   const [snapshot, setSnapshot] = useState<HostSnapshotDto | null>(null);
@@ -80,6 +82,15 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const [plugins, setPlugins] = useState<PluginInfoDto[] | null>(null);
   /** 无会话上下文的失败显形（如新建会话时插件加载失败，报错点名插件）。 */
   const [globalNotice, setGlobalNotice] = useState<string | null>(null);
+  /* 会话回放（阶段 3）：游标在 ref 里（纯逻辑、单测覆盖），UI 状态只镜像下标/播放/倍速。 */
+  const replayCursorRef = useRef<ReplayCursor | null>(null);
+  const [replayUi, setReplayUi] = useState<{
+    sessionId: string;
+    index: number;
+    total: number;
+    playing: boolean;
+    speed: number;
+  } | null>(null);
   /** 已把「投递」呈现为执行流用户消息的条目 id（防实时推送与回放双份）。 */
   const deliveredInjectedRef = useRef<Map<string, Set<string>>>(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
@@ -345,7 +356,61 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         ? "运行中"
         : "空闲";
 
+  /* ---------- 会话回放（阶段 3，只读） ---------- */
+
+  const exitReplay = useCallback(() => {
+    replayCursorRef.current = null;
+    setReplayUi(null);
+  }, []);
+
+  const syncReplayIndex = useCallback(() => {
+    const cursor = replayCursorRef.current;
+    if (!cursor) return;
+    setReplayUi((u) => (u ? { ...u, index: cursor.index } : u));
+  }, []);
+
+  const handleReplayStart = async () => {
+    if (!activeId) return;
+    const h = await bridge.history(activeId);
+    const cursor = new ReplayCursor(h.events);
+    replayCursorRef.current = cursor;
+    setReplayUi({
+      sessionId: activeId,
+      index: 0,
+      total: cursor.total,
+      playing: false,
+      speed: 1,
+    });
+  };
+
+  const handleReplayToggle = () => {
+    const cursor = replayCursorRef.current;
+    if (!cursor) return;
+    if (cursor.atEnd) cursor.reset();
+    syncReplayIndex();
+    setReplayUi((u) => (u ? { ...u, playing: !u.playing } : u));
+  };
+
+  // 回放播放定时器：按倍速逐步推进游标；到结尾自动停。
+  useEffect(() => {
+    if (!replayUi?.playing) return;
+    const timer = setInterval(
+      () => {
+        const cursor = replayCursorRef.current;
+        if (!cursor) return;
+        if (!cursor.stepForward()) {
+          setReplayUi((u) => (u ? { ...u, playing: false } : u));
+          return;
+        }
+        syncReplayIndex();
+      },
+      Math.max(30, Math.round(300 / replayUi.speed)),
+    );
+    return () => clearInterval(timer);
+  }, [replayUi?.playing, replayUi?.speed, replayUi?.sessionId, syncReplayIndex]);
+
   const handleSelect = async (id: string) => {
+    exitReplay();
     setActiveId(id);
     if (!streams.has(id)) await loadHistory(id);
     loadCheckpoints(id).catch(() => undefined);
@@ -360,6 +425,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   };
 
   const handleNew = async () => {
+    exitReplay();
     try {
       const meta = await bridge.createSession();
       await refreshSnapshot();
@@ -702,14 +768,21 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     );
   }
 
-  const canSend = activeLive;
-  const disabledHint = !activeMeta
-    ? "先新建或选择一个会话"
-    : !activeMeta.live
-      ? "历史会话（只读）：点上方「继续会话」续接后可继续发送"
-      : activeId && exited.has(activeId)
-        ? "子进程已退出，不能发送"
-        : null;
+  const replayActive = !!replayUi && replayUi.sessionId === activeId;
+  const replayState = replayActive
+    ? (replayCursorRef.current?.state() ?? initialStreamState)
+    : null;
+
+  const canSend = activeLive && !replayActive;
+  const disabledHint = replayActive
+    ? "回放中（只读）：退出回放后可继续操作"
+    : !activeMeta
+      ? "先新建或选择一个会话"
+      : !activeMeta.live
+        ? "历史会话（只读）：点上方「继续会话」续接后可继续发送"
+        : activeId && exited.has(activeId)
+          ? "子进程已退出，不能发送"
+          : null;
 
   return (
     <div className="app-shell" data-testid="app-shell" data-mode={snapshot.permissionMode}>
@@ -757,8 +830,45 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
               续接后可继续发送，上下文按 Pi 会话文件恢复。
             </div>
           )}
-          <StreamView state={activeStream ?? initialStreamState} onDiffMark={handleDiffMark} />
-          {activeId && planViews.get(activeId)?.plan && (
+          {activeMeta && !replayActive && (
+            <div className="replay-toolbar">
+              <button
+                type="button"
+                data-testid="replay-start"
+                onClick={handleReplayStart}
+                title="从落盘事件流逐步重放本会话（只读，不产生新运行）"
+              >
+                回放本会话
+              </button>
+            </div>
+          )}
+          {replayActive && replayUi && (
+            <ReplayBar
+              index={replayUi.index}
+              total={replayUi.total}
+              playing={replayUi.playing}
+              speed={replayUi.speed}
+              onTogglePlay={handleReplayToggle}
+              onStepBack={() => {
+                replayCursorRef.current?.stepBack();
+                syncReplayIndex();
+              }}
+              onStepForward={() => {
+                replayCursorRef.current?.stepForward();
+                syncReplayIndex();
+              }}
+              onSeek={(n) => {
+                replayCursorRef.current?.seek(n);
+                syncReplayIndex();
+              }}
+              onSpeedChange={(speed) =>
+                setReplayUi((u) => (u ? { ...u, speed } : u))
+              }
+              onExit={exitReplay}
+            />
+          )}
+          <StreamView state={replayState ?? activeStream ?? initialStreamState} onDiffMark={handleDiffMark} />
+          {!replayActive && activeId && planViews.get(activeId)?.plan && (
             <PlanCard
               view={planViews.get(activeId)!}
               pendingSelect={!!pendingPlanSelects.get(activeId)}
@@ -766,7 +876,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
               onPauseChange={handlePlanPauseChange}
             />
           )}
-          {activeId && pendingApprovals.get(activeId) && (
+          {!replayActive && activeId && pendingApprovals.get(activeId) && (
             <ApprovalCard
               request={pendingApprovals.get(activeId)!}
               onRespond={handleApprovalRespond}
@@ -774,7 +884,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
           )}
           <Composer
             canSend={canSend}
-            running={running}
+            running={replayActive ? false : running}
             disabledHint={disabledHint}
             stats={activeId ? (statsMap.get(activeId) ?? null) : null}
             queue={activeId ? (queuesMap.get(activeId) ?? []) : []}

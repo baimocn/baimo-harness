@@ -1222,6 +1222,80 @@ export function RightPanel(props: {
   );
 }
 
+/* ---------------- 会话回放（阶段 3） ---------------- */
+
+/**
+ * 回放控制条：播放/暂停、单步前进/后退、进度拖动、倍速、退出。
+ * 回放只读——画面由落盘事件经同一归约器折叠，控制条不提供任何
+ * 能影响真实会话的操作（无发送、无续接）。
+ */
+export function ReplayBar(props: {
+  index: number;
+  total: number;
+  playing: boolean;
+  speed: number;
+  onTogglePlay: () => void;
+  onStepBack: () => void;
+  onStepForward: () => void;
+  onSeek: (index: number) => void;
+  onSpeedChange: (speed: number) => void;
+  onExit: () => void;
+}) {
+  return (
+    <div className="replay-bar" data-testid="replay-bar">
+      <span className="replay-title">回放（只读）</span>
+      <button
+        type="button"
+        data-testid="replay-toggle"
+        onClick={props.onTogglePlay}
+        disabled={props.total === 0}
+      >
+        {props.playing ? "暂停" : "播放"}
+      </button>
+      <button
+        type="button"
+        data-testid="replay-step-back"
+        onClick={props.onStepBack}
+        disabled={props.index <= 0}
+      >
+        上一步
+      </button>
+      <button
+        type="button"
+        data-testid="replay-step-forward"
+        onClick={props.onStepForward}
+        disabled={props.index >= props.total}
+      >
+        下一步
+      </button>
+      <input
+        type="range"
+        data-testid="replay-seek"
+        min={0}
+        max={props.total}
+        value={props.index}
+        onChange={(e) => props.onSeek(Number(e.target.value))}
+      />
+      <span data-testid="replay-progress">
+        事件 {props.index} / {props.total}
+      </span>
+      <select
+        data-testid="replay-speed"
+        value={props.speed}
+        onChange={(e) => props.onSpeedChange(Number(e.target.value))}
+      >
+        <option value={0.5}>0.5×</option>
+        <option value={1}>1×</option>
+        <option value={2}>2×</option>
+        <option value={4}>4×</option>
+      </select>
+      <button type="button" data-testid="replay-exit" onClick={props.onExit}>
+        退出回放
+      </button>
+    </div>
+  );
+}
+
 /* ---------------- 底部输入区 ---------------- */
 
 export function ContextRing(props: { stats: SessionStatsDto | null }) {
