@@ -110,7 +110,13 @@ export class PiProcess extends EventEmitter {
     this.exitPromise = new Promise<PiExitInfo>((resolve) => {
       child.once("exit", (code, signal) => {
         this.exitInfoValue = { code, signal, stderrTail: this.stderrTail };
-        this.emit("exit", this.exitInfoValue);
+        // 监听器异常（例如落盘失败）不得中断进程生命周期的结算：
+        // exitPromise 必须兑现，否则 stop() 会永久挂起（E2E 实证）。
+        try {
+          this.emit("exit", this.exitInfoValue);
+        } catch {
+          /* 监听器错误由监听器自身负责显形，进程结算优先 */
+        }
         resolve(this.exitInfoValue);
       });
     });

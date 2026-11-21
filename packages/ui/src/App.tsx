@@ -19,6 +19,7 @@ import type {
   PlanViewDto,
   SessionMetaDto,
   SessionStatsDto,
+  SteeringEntryDto,
 } from "./bridge.js";
 import {
   ApprovalCard,
@@ -64,6 +65,11 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const [pendingPlanEdits, setPendingPlanEdits] = useState<
     Map<string, PlanEditRequestDto>
   >(new Map());
+  const [queuesMap, setQueuesMap] = useState<Map<string, SteeringEntryDto[]>>(
+    new Map(),
+  );
+  /** 已把「投递」呈现为执行流用户消息的条目 id（防实时推送与回放双份）。 */
+  const deliveredInjectedRef = useRef<Map<string, Set<string>>>(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<RightTab>("changes");
   const [confirmDelete, setConfirmDelete] =
@@ -115,6 +121,22 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       const view = await bridge.getPlan(id).catch(() => null);
       if (view) {
         setPlanViews((prev) => new Map(prev).set(id, view));
+      }
+    },
+    [bridge],
+  );
+
+  const loadQueue = useCallback(
+    async (id: string) => {
+      const entries = await bridge.getQueue(id).catch(() => null);
+      if (entries) {
+        // 已投递条目在回放里已由落盘记录呈现，实时注入集先行占位防双份
+        const set = deliveredInjectedRef.current.get(id) ?? new Set<string>();
+        for (const e of entries) {
+          if (e.status === "delivered") set.add(e.id);
+        }
+        deliveredInjectedRef.current.set(id, set);
+        setQueuesMap((prev) => new Map(prev).set(id, entries));
       }
     },
     [bridge],
@@ -182,6 +204,23 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     const offPlanChanged = bridge.onPlanChanged((e) => {
       loadPlan(e.sessionId).catch(() => undefined);
     });
+    const offQueue = bridge.onQueueChanged((e) => {
+      setQueuesMap((prev) => new Map(prev).set(e.sessionId, e.entries));
+      // 投递发生的那一刻，把这条指令呈现为执行流里的一条用户消息（去向可见）；
+      // 回放路径由主进程把落盘 steering_delivered 归一化为同一形态，不双份。
+      const set =
+        deliveredInjectedRef.current.get(e.sessionId) ?? new Set<string>();
+      for (const entry of e.entries) {
+        if (entry.status === "delivered" && !set.has(entry.id)) {
+          set.add(entry.id);
+          updateStream(e.sessionId, {
+            type: "user_prompt",
+            message: entry.text,
+          });
+        }
+      }
+      deliveredInjectedRef.current.set(e.sessionId, set);
+    });
     const offApproval = bridge.onApprovalRequested((e) => {
       setPendingApprovals((prev) => new Map(prev).set(e.sessionId, e));
     });
@@ -212,6 +251,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       offPlanRequested();
       offPlanEdit();
       offPlanChanged();
+      offQueue();
     };
   }, [bridge, loadCheckpoints, loadHistory, loadPlan, refreshSnapshot, updateStream]);
 
@@ -256,6 +296,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     if (!streams.has(id)) await loadHistory(id);
     loadCheckpoints(id).catch(() => undefined);
     loadPlan(id).catch(() => undefined);
+    loadQueue(id).catch(() => undefined);
     const meta = allSessions.find((s) => s.id === id);
     if (meta?.live && !statsMap.has(id)) {
       const st = await bridge.stats(id).catch(() => null);
@@ -269,6 +310,8 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     setStreams((prev) => new Map(prev).set(meta.id, initialStreamState));
     setCheckpointsMap((prev) => new Map(prev).set(meta.id, []));
     setActiveId(meta.id);
+    loadPlan(meta.id).catch(() => undefined);
+    loadQueue(meta.id).catch(() => undefined);
   };
 
   const handleSend = async (text: string) => {
@@ -287,6 +330,27 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     if (!activeId) return;
     await bridge.abortSession(activeId).catch(() => undefined);
     // 结算（run-settled 推送）会把流带回空闲并落「已停止」标记，这里不抢先改状态
+  };
+
+  /** 运行中排队：steer 注入纠正 / follow_up 排队；入队即落盘，投递时才进执行流。 */
+  const handleQueue = async (text: string, kind: "steer" | "follow_up") => {
+    if (!activeId) return;
+    try {
+      if (kind === "steer") await bridge.steer(activeId, text);
+      else await bridge.followUp(activeId, text);
+      loadQueue(activeId).catch(() => undefined);
+    } catch (err) {
+      notice(activeId, `排队失败：${String(err)}`, "error");
+    }
+  };
+
+  const handleWithdrawQueue = async (entryId: string) => {
+    if (!activeId) return;
+    const res = await bridge.withdrawQueueEntry(activeId, entryId);
+    if (!res.ok) {
+      notice(activeId, `撤回失败：${res.error ?? "未知错误"}`, "error");
+    }
+    loadQueue(activeId).catch(() => undefined);
   };
 
   const handleResume = async () => {
@@ -423,6 +487,12 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
 
   const handlePlanRequiredChange = async (required: boolean) => {
     if (!activeId) return;
+    // 先乐观更新本地视图（受控开关不能等 IPC 往返，否则勾选会被旧状态重置）
+    setPlanViews((prev) => {
+      const cur = prev.get(activeId);
+      if (!cur) return prev;
+      return new Map(prev).set(activeId, { ...cur, required });
+    });
     await bridge.setPlanRequired(activeId, required);
     loadPlan(activeId).catch(() => undefined);
   };
@@ -494,16 +564,14 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     );
   }
 
-  const canSend = activeLive && !running;
+  const canSend = activeLive;
   const disabledHint = !activeMeta
     ? "先新建或选择一个会话"
     : !activeMeta.live
       ? "历史会话（只读）：点上方「继续会话」续接后可继续发送"
       : activeId && exited.has(activeId)
         ? "子进程已退出，不能发送"
-        : running
-          ? "运行中：可点「停止」结束本轮，或等待结算…"
-          : null;
+        : null;
 
   return (
     <div className="app-shell" data-testid="app-shell" data-mode={snapshot.permissionMode}>
@@ -558,7 +626,10 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
             running={running}
             disabledHint={disabledHint}
             stats={activeId ? (statsMap.get(activeId) ?? null) : null}
+            queue={activeId ? (queuesMap.get(activeId) ?? []) : []}
             onSend={handleSend}
+            onQueue={handleQueue}
+            onWithdraw={handleWithdrawQueue}
             onStop={handleStop}
           />
         </main>

@@ -143,6 +143,19 @@ export interface PlanEditRequestDto {
 
 export type PlanSelectChoice = "approve" | "edit" | "deny";
 
+/* ---------- M-04 Steering 队列 ---------- */
+
+export interface SteeringEntryDto {
+  id: string;
+  /** steer = 注入纠正（下一轮次边界投递）；follow_up = 排队（运行收尾后投递）。 */
+  kind: "steer" | "follow_up";
+  text: string;
+  /** queued 待投递 / delivered 已投递 / withdrawn 已撤回（去向必须可见）。 */
+  status: "queued" | "delivered" | "withdrawn";
+  createdAt: string;
+  deliveredAt?: string;
+}
+
 export interface HostSnapshotDto {
   /** 随附 Pi 版本（读自 runtime 钉版包，读不到为「未知」）。 */
   kernelVersion: string;
@@ -257,6 +270,20 @@ export interface BaimoBridge {
   ): Promise<{ ok: boolean }>;
   /** 暂停/恢复计划执行：经策略文件在工具调用边界生效。 */
   setPlanPaused(sessionId: string, paused: boolean): Promise<{ ok: boolean }>;
+  /** 注入纠正：运行中下一轮次边界投递，空闲时排入下一次运行。 */
+  steer(id: string, text: string): Promise<SteeringEntryDto>;
+  /** 排队：当前运行收尾后投递，空闲时排入下一次运行。 */
+  followUp(id: string, text: string): Promise<SteeringEntryDto>;
+  /** 当前队列镜像（宿主持久化，含待投递与本轮去向）。 */
+  getQueue(id: string): Promise<SteeringEntryDto[]>;
+  /** 撤回一条待投递指令（已投递/已撤回的会报错显形）。 */
+  withdrawQueueEntry(
+    id: string,
+    entryId: string,
+  ): Promise<{ ok: boolean; error?: string }>;
+  onQueueChanged(
+    cb: (e: { sessionId: string; entries: SteeringEntryDto[] }) => void,
+  ): () => void;
   onPlanRequested(cb: (e: PlanRequestDto) => void): () => void;
   onPlanEditRequested(cb: (e: PlanEditRequestDto) => void): () => void;
   onPlanChanged(cb: (e: { sessionId: string }) => void): () => void;

@@ -599,6 +599,9 @@ function wireHandle(handle: SessionHandle): void {
     }
     send("session:event", { sessionId: handle.id, record });
   });
+  handle.on("queueChanged", (entries) => {
+    send("queue:changed", { sessionId: handle.id, entries });
+  });
   handle.on("processExit", (info) => {
     live.delete(handle.id);
     send("session:process-exit", {
@@ -682,6 +685,13 @@ function registerIpc(): void {
         normalized.push(e.event as Record<string, unknown>);
       } else if (e.kind === "prompt") {
         normalized.push({ type: "user_prompt", message: e.message });
+      } else if (
+        e.kind === "lifecycle" &&
+        e.event === "steering_delivered" &&
+        typeof e.text === "string"
+      ) {
+        // M-04：排队指令投递到 agent 的那一刻，它就是一条用户消息——回放同口径呈现
+        normalized.push({ type: "user_prompt", message: e.text });
       } else if (e.kind === "lifecycle") {
         normalized.push({ type: "lifecycle", event: e.event });
         const label = MILESTONE_LABELS[String(e.event)];
@@ -760,6 +770,42 @@ function registerIpc(): void {
     const aborted = await handle.abort();
     return { aborted };
   });
+
+  /* ---------- Steering 队列（M-04） ---------- */
+
+  ipcMain.handle("session:steer", async (_e, id: string, text: string) => {
+    const handle = live.get(id);
+    if (!handle) throw new Error("会话未在运行，无法排队");
+    return handle.steer(text);
+  });
+
+  ipcMain.handle("session:follow-up", async (_e, id: string, text: string) => {
+    const handle = live.get(id);
+    if (!handle) throw new Error("会话未在运行，无法排队");
+    return handle.followUp(text);
+  });
+
+  ipcMain.handle("session:queue", (_e, id: string) => {
+    const handle = live.get(id);
+    return handle ? handle.getQueue() : [];
+  });
+
+  ipcMain.handle(
+    "session:queue-withdraw",
+    async (_e, id: string, entryId: string) => {
+      const handle = live.get(id);
+      if (!handle) return { ok: false, error: "会话未在运行" };
+      try {
+        await handle.withdrawQueueEntry(entryId);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
 
   ipcMain.handle("session:close", async (_e, id: string) => {
     const handle = live.get(id);

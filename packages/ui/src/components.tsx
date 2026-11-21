@@ -15,6 +15,7 @@ import {
   type PlanViewDto,
   type SessionMetaDto,
   type SessionStatsDto,
+  type SteeringEntryDto,
 } from "./bridge.js";
 import {
   computeLineDiff,
@@ -762,61 +763,148 @@ export function ContextRing(props: { stats: SessionStatsDto | null }) {
   );
 }
 
+/**
+ * Steering 队列条（M-04）：输入区上方逐条展示排队指令与去向。
+ * 待投递可撤回；已投递/已撤回保留显示到下一轮开始（去向必须可见）。
+ */
+export function QueueStrip(props: {
+  queue: SteeringEntryDto[];
+  onWithdraw: (entryId: string) => void;
+}) {
+  if (props.queue.length === 0) return null;
+  return (
+    <div className="queue-strip" data-testid="queue-strip">
+      <span className="dim">
+        已排队 {props.queue.filter((e) => e.status === "queued").length} 条
+      </span>
+      {props.queue.map((e) => (
+        <div
+          key={e.id}
+          className={`queue-entry queue-${e.status}`}
+          data-testid="queue-entry"
+          data-kind={e.kind}
+          data-status={e.status}
+        >
+          <span className="queue-kind">
+            {e.kind === "steer" ? "注入纠正" : "排队"}
+          </span>
+          <span className="queue-text">{e.text}</span>
+          <span className="dim">
+            {e.status === "queued"
+              ? "待投递"
+              : e.status === "delivered"
+                ? "已投递"
+                : "已撤回"}
+          </span>
+          {e.status === "queued" && (
+            <button
+              type="button"
+              data-testid="queue-withdraw"
+              onClick={() => props.onWithdraw(e.id)}
+              title="撤回这条待投递指令（Pi 整表清除后其余条目按原序重新入队）"
+            >
+              撤回
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Composer(props: {
+  /** 会话是否 live（live 时空闲可发送、运行中可排队；非 live 整体禁用）。 */
   canSend: boolean;
   running: boolean;
   disabledHint: string | null;
   stats: SessionStatsDto | null;
+  queue: SteeringEntryDto[];
   onSend: (text: string) => void;
+  /** 运行中发送：kind=steer 注入纠正（下一轮次边界）/ follow_up 排队（收尾后）。 */
+  onQueue: (text: string, kind: "steer" | "follow_up") => void;
+  onWithdraw: (entryId: string) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
+  const [queueKind, setQueueKind] = useState<"steer" | "follow_up">("follow_up");
   const send = () => {
     const t = text.trim();
     if (!t || !props.canSend) return;
     setText("");
-    props.onSend(t);
+    if (props.running) props.onQueue(t, queueKind);
+    else props.onSend(t);
   };
   return (
     <div className="composer" data-testid="composer">
-      <textarea
-        data-testid="composer-input"
-        value={text}
-        placeholder={
-          props.disabledHint ?? "输入指令，Enter 发送，Shift+Enter 换行"
-        }
-        disabled={!props.canSend}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            send();
+      <QueueStrip queue={props.queue} onWithdraw={props.onWithdraw} />
+      <div className="composer-row">
+        <textarea
+          data-testid="composer-input"
+          value={text}
+          placeholder={
+            props.disabledHint ??
+            (props.running
+              ? "运行中：输入后排队投递，不打断当前运行（Enter 入队）"
+              : "输入指令，Enter 发送，Shift+Enter 换行")
           }
-        }}
-        rows={3}
-      />
-      <div className="composer-side">
-        <ContextRing stats={props.stats} />
-        {props.running ? (
-          <button
-            type="button"
-            data-testid="composer-stop"
-            className="btn-stop"
-            onClick={props.onStop}
-            title="停止当前运行（RPC abort）：运行以「已停止」收尾，不记完成"
-          >
-            停止
-          </button>
-        ) : (
-          <button
-            type="button"
-            data-testid="composer-send"
-            disabled={!props.canSend || text.trim() === ""}
-            onClick={send}
-          >
-            发送
-          </button>
-        )}
+          disabled={!props.canSend}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          rows={3}
+        />
+        <div className="composer-side">
+          <ContextRing stats={props.stats} />
+          <div className="composer-actions">
+            {props.running && (
+              <span className="queue-kind-switch" role="group" aria-label="排队方式">
+                <button
+                  type="button"
+                  data-testid="queue-kind-followup"
+                  className={queueKind === "follow_up" ? "active" : ""}
+                  aria-pressed={queueKind === "follow_up"}
+                  onClick={() => setQueueKind("follow_up")}
+                  title="排队：当前运行收尾后投递"
+                >
+                  排队
+                </button>
+                <button
+                  type="button"
+                  data-testid="queue-kind-steer"
+                  className={queueKind === "steer" ? "active" : ""}
+                  aria-pressed={queueKind === "steer"}
+                  onClick={() => setQueueKind("steer")}
+                  title="注入纠正：下一轮次边界立即并入"
+                >
+                  注入纠正
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              data-testid="composer-send"
+              disabled={!props.canSend || text.trim() === ""}
+              onClick={send}
+            >
+              {props.running ? "入队" : "发送"}
+            </button>
+            {props.running && (
+              <button
+                type="button"
+                data-testid="composer-stop"
+                className="btn-stop"
+                onClick={props.onStop}
+                title="停止当前运行（RPC abort）：运行以「已停止」收尾，不记完成"
+              >
+                停止
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

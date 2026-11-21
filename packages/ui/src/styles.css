@@ -157,12 +157,24 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .change-row { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #23262d; font-family: ui-monospace, monospace; font-size: 12px; }
 
 /* 输入区 */
-.composer { display: flex; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--panel); }
+.composer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--panel); }
+.composer-row { display: flex; gap: 10px; }
 .composer textarea {
   flex: 1; background: #101216; color: var(--text); border: 1px solid var(--border);
   border-radius: 6px; padding: 8px; resize: none; font-family: inherit;
 }
 .composer-side { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; }
+.composer-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.queue-strip { display: flex; flex-direction: column; gap: 4px; }
+.queue-entry { display: flex; gap: 8px; align-items: center; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+.queue-kind { border: 1px solid var(--accent); color: var(--accent); border-radius: 3px; padding: 0 5px; font-size: 11px; flex-shrink: 0; }
+.queue-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-delivered { opacity: 0.65; }
+.queue-withdrawn { opacity: 0.45; }
+.queue-withdrawn .queue-text { text-decoration: line-through; }
+.queue-kind-switch { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.queue-kind-switch button { border: none; border-radius: 0; background: transparent; padding: 3px 7px; font-size: 11px; }
+.queue-kind-switch button.active { background: var(--accent); color: #fff; }
 .ring-wrap { display: flex; gap: 8px; align-items: center; }
 .ring-bg { fill: none; stroke: #2c313a; stroke-width: 4; }
 .ring-fg { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }

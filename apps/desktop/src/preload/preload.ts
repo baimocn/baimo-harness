@@ -17,6 +17,7 @@ import type {
   RunSettledPayload,
   SessionEventPayload,
   SessionStatsDto,
+  SteeringEntryDto,
 } from "@baimo-harness/ui";
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -64,6 +65,15 @@ const api: BaimoBridge = {
   onCheckpointError: (
     cb: (e: { sessionId: string; message: string }) => void,
   ) => subscribe("checkpoint:error", cb),
+  steer: (id: string, text: string) => ipcRenderer.invoke("session:steer", id, text),
+  followUp: (id: string, text: string) =>
+    ipcRenderer.invoke("session:follow-up", id, text),
+  getQueue: (id: string) => ipcRenderer.invoke("session:queue", id),
+  withdrawQueueEntry: (id: string, entryId: string) =>
+    ipcRenderer.invoke("session:queue-withdraw", id, entryId),
+  onQueueChanged: (
+    cb: (e: { sessionId: string; entries: SteeringEntryDto[] }) => void,
+  ) => subscribe("queue:changed", cb),
   getPlan: (id: string) => ipcRenderer.invoke("plan:get", id),
   respondPlanSelect: (sessionId: string, requestId: string, choice: string) =>
     ipcRenderer.invoke("plan:respond-select", sessionId, requestId, choice),
