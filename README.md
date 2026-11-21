@@ -12,7 +12,7 @@
 
 ```
 apps/desktop/       Electron 壳（main / preload / renderer）— 待阶段 1
-apps/agent-host/    Pi 子进程托管、RPC 转发与对账、会话落盘 — 待阶段 1
+apps/agent-host/    Pi 子进程托管、RPC 转发与对账、会话落盘（已落地，见当前状态）
 packages/ui/        React 组件（将来 Web 版共用）
 packages/rpc/       RPC 协议与类型定义；test/ 下有 RPC 冒烟测试
 packages/core/      壳层领域逻辑（会话/权限/账本/检查点等，见产品设计文档 3.7）
@@ -21,19 +21,24 @@ docs/               项目内文档（telemetry-audit.md 等）
 tests/regression/   回归基线用例
 ```
 
-## 当前状态（2026-11-21，阶段 0 前置）
+## 当前状态（2026-11-21，agent-host 已落地）
 
 - [x] 项目骨架 + npm workspaces + git
 - [x] Pi 1.6.0 装入 `runtime/`，RPC 协议形态已摸清（JSONL over stdio，`get_state` 握手，关 stdin 有序退出）
 - [x] 遥测审计完成 → `docs/telemetry-audit.md`：可彻底关闭（`PI_TELEMETRY=0` + 设置 `enableInstallTelemetry:false`），RPC 模式本身不触发上报
 - [x] 测试套路立起：`test:e2e`（端到端冒烟）与 `test:regression`（回归基线）
+- [x] **agent-host 落地**（`apps/agent-host`，TypeScript，`npm run build` 编译）：PiProcess 管理器（遥测三重关闭、退出显形、逐级关闭）、RpcClient（id 关联/超时/坏行不吞）、SessionStore（append-only JSONL + 索引、尾部损坏可恢复）、AgentHost 门面（每会话一进程、握手、事件落盘）
+- [x] 内核债壳层补偿三条：K-01 错误显形（success:false/退出/超时一律类型化错误）、K-02 工具循环终止检测（无 agent_settled 的结束 = 异常终止事件 + 事件计数）、K-03 配置校验（宿主配置与 Pi 设置未知键/非法值拒绝启动）
+- [x] 桩模型 E2E：本地 OpenAI 兼容桩服务器跑通完整轮次（流式文本 → bash 工具调用 → agent_settled → 落盘可查），测试记录 `docs/test-runs/2026-11-21-agent-host.md`
 - [ ] 阶段 0：装原版 Pi 接一个模型跑通手感（后续）
+- [ ] 阶段 1：Electron 壳内嵌 agent-host（后续）
 
 ## 测试
 
 ```bash
-npm run test:e2e         # 端到端：当前为 Pi RPC 冒烟（握手/错误面/关闭，全程无模型调用）
-npm run test:regression  # 回归：冒烟 + 骨架/版本/红线文档基线
+npm run build            # 编译 agent-host（tsc）
+npm run test:e2e         # 端到端：Pi RPC 冒烟 + agent-host E2E（含桩模型完整轮次）
+npm run test:regression  # 回归：E2E 全部 + 骨架/版本/红线文档基线
 ```
 
 规矩：每个功能落地时同步往 `test:e2e` 或 `tests/regression/` 加用例；改动后先跑 `test:regression` 复核旧功能没被破坏。
