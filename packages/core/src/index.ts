@@ -1,1 +1,1 @@
-// core — 占位，待阶段开发填充
+export * from "./checkpoints.js";

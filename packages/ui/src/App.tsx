@@ -8,8 +8,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   BaimoBridge,
+  CheckpointDto,
   HostSnapshotDto,
-  MilestoneDto,
   PermissionMode,
   SessionMetaDto,
   SessionStatsDto,
@@ -27,7 +27,9 @@ import {
   applyDiffMark,
   applyHostEvent,
   applyHostEvents,
+  diffPayload,
   initialStreamState,
+  type DiffMark,
   type StreamState,
 } from "./stream.js";
 
@@ -38,8 +40,8 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const [statsMap, setStatsMap] = useState<Map<string, SessionStatsDto>>(
     new Map(),
   );
-  const [milestonesMap, setMilestonesMap] = useState<
-    Map<string, MilestoneDto[]>
+  const [checkpointsMap, setCheckpointsMap] = useState<
+    Map<string, CheckpointDto[]>
   >(new Map());
   const [exited, setExited] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<RightTab>("changes");
@@ -73,7 +75,16 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
         next.set(id, applyHostEvents(initialStreamState, h.events));
         return next;
       });
-      setMilestonesMap((prev) => new Map(prev).set(id, h.milestones));
+    },
+    [bridge],
+  );
+
+  const loadCheckpoints = useCallback(
+    async (id: string) => {
+      const list = await bridge.listCheckpoints(id).catch(() => null);
+      if (list) {
+        setCheckpointsMap((prev) => new Map(prev).set(id, list));
+      }
     },
     [bridge],
   );
@@ -109,14 +120,19 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
           message: e.error ?? "运行异常终止（未以 agent_settled 结算）",
         });
       }
-      // 里程碑以落盘为准重新拉取；快照同步状态
-      bridge
-        .history(e.sessionId)
-        .then((h) =>
-          setMilestonesMap((prev) => new Map(prev).set(e.sessionId, h.milestones)),
-        )
-        .catch(() => undefined);
+      // 检查点以主进程快照为准重新拉取；快照同步状态
+      loadCheckpoints(e.sessionId).catch(() => undefined);
       refreshSnapshot().catch(() => undefined);
+    });
+    const offCkpt = bridge.onCheckpointsChanged((e) => {
+      loadCheckpoints(e.sessionId).catch(() => undefined);
+    });
+    const offCkptErr = bridge.onCheckpointError((e) => {
+      updateStream(e.sessionId, {
+        type: "notice",
+        label: e.message,
+        tone: "error",
+      });
     });
     const offStats = bridge.onStats((e) =>
       setStatsMap((prev) => new Map(prev).set(e.sessionId, e.stats)),
@@ -131,8 +147,10 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
       offSettled();
       offStats();
       offExit();
+      offCkpt();
+      offCkptErr();
     };
-  }, [bridge, loadHistory, refreshSnapshot, updateStream]);
+  }, [bridge, loadCheckpoints, loadHistory, refreshSnapshot, updateStream]);
 
   const allSessions = useMemo(() => {
     if (!snapshot) return [];
@@ -173,6 +191,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
   const handleSelect = async (id: string) => {
     setActiveId(id);
     if (!streams.has(id)) await loadHistory(id);
+    loadCheckpoints(id).catch(() => undefined);
     const meta = allSessions.find((s) => s.id === id);
     if (meta?.live && !statsMap.has(id)) {
       const st = await bridge.stats(id).catch(() => null);
@@ -184,7 +203,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     const meta = await bridge.createSession();
     await refreshSnapshot();
     setStreams((prev) => new Map(prev).set(meta.id, initialStreamState));
-    setMilestonesMap((prev) => new Map(prev).set(meta.id, []));
+    setCheckpointsMap((prev) => new Map(prev).set(meta.id, []));
     setActiveId(meta.id);
   };
 
@@ -230,6 +249,71 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
     setSnapshot((prev) =>
       prev ? { ...prev, selectedModel: { provider, modelId } } : prev,
     );
+  };
+
+  const notice = useCallback(
+    (id: string, label: string, tone: "info" | "ok" | "error" = "info") => {
+      updateStream(id, { type: "notice", label, tone });
+    },
+    [updateStream],
+  );
+
+  /** diff 卡标记：接受只落标记；回滚走真实单文件回滚（恢复到最近检查点），成功才落标记。 */
+  const handleDiffMark = async (toolCallId: string, mark: DiffMark) => {
+    if (!activeId) return;
+    const cur = streams.get(activeId);
+    if (!cur) return;
+    if (mark === "rolledback") {
+      const item = cur.items.find(
+        (it) => it.kind === "tool" && it.toolCallId === toolCallId,
+      );
+      const diff = item ? diffPayload(item) : null;
+      if (!diff) {
+        notice(activeId, "回滚失败：该条目没有可回滚的文件改动", "error");
+        return;
+      }
+      const res = await bridge.rollbackFile(activeId, diff.path);
+      if (!res.ok) {
+        notice(activeId, `回滚失败：${res.error ?? "未知错误"}`, "error");
+        return;
+      }
+      notice(
+        activeId,
+        `已把 ${diff.path} 回滚到最近检查点（${res.action}）`,
+        "ok",
+      );
+      loadCheckpoints(activeId).catch(() => undefined);
+    }
+    setStreams((prev) => {
+      const s = prev.get(activeId);
+      if (!s) return prev;
+      const next = new Map(prev);
+      next.set(activeId, applyDiffMark(s, toolCallId, mark));
+      return next;
+    });
+  };
+
+  const handleManualCheckpoint = async () => {
+    if (!activeId) return;
+    const res = await bridge.createCheckpoint(activeId);
+    notice(
+      activeId,
+      res.created
+        ? `已打检查点「${res.checkpoint.label}」（${res.checkpoint.fileCount} 个文件）`
+        : "工作区与最近检查点无差异，未重复打点",
+    );
+    loadCheckpoints(activeId).catch(() => undefined);
+  };
+
+  const handleRollbackCheckpoint = async (checkpointId: string) => {
+    if (!activeId) return;
+    const report = await bridge.rollbackCheckpoint(activeId, checkpointId);
+    notice(
+      activeId,
+      `已回滚到检查点：恢复 ${report.restored.length} 个文件、删除 ${report.deleted.length} 个新建文件、校验${report.verified ? "通过" : `失败（${report.mismatches.join(", ")}）`}`,
+      report.verified ? "ok" : "error",
+    );
+    loadCheckpoints(activeId).catch(() => undefined);
   };
 
   const handleTrashConfirm = async () => {
@@ -307,19 +391,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
               续接后可继续发送，上下文按 Pi 会话文件恢复。
             </div>
           )}
-          <StreamView
-            state={activeStream ?? initialStreamState}
-            onDiffMark={(toolCallId, mark) => {
-              if (!activeId) return;
-              setStreams((prev) => {
-                const cur = prev.get(activeId);
-                if (!cur) return prev;
-                const next = new Map(prev);
-                next.set(activeId, applyDiffMark(cur, toolCallId, mark));
-                return next;
-              });
-            }}
-          />
+          <StreamView state={activeStream ?? initialStreamState} onDiffMark={handleDiffMark} />
           <Composer
             canSend={canSend}
             running={running}
@@ -333,7 +405,9 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
           tab={tab}
           onTab={setTab}
           state={activeStream}
-          milestones={activeId ? (milestonesMap.get(activeId) ?? []) : []}
+          checkpoints={activeId ? (checkpointsMap.get(activeId) ?? []) : []}
+          onRollbackCheckpoint={handleRollbackCheckpoint}
+          onManualCheckpoint={handleManualCheckpoint}
         />
       </div>
       <StatusBar

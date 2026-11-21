@@ -45,7 +45,7 @@ export interface StreamState {
   running: boolean;
   /** 已结算轮次（agent_settled 次数）。 */
   settledRuns: number;
-  /** diff 卡的人工标记（接受/回滚按钮本块只落状态标记，检查点回滚联动在下一块）。 */
+  /** diff 卡的人工标记（接受=保留现状；回滚=经检查点真实恢复后才落标记，见 App.handleDiffMark）。 */
   diffMarks: Record<string, DiffMark>;
   seq: number;
   /** 当前正在流式输出的 assistant 条目 id（内部游标）。 */
@@ -189,6 +189,21 @@ export function applyHostEvent(state: StreamState, raw: unknown): StreamState {
         running: false,
       };
     }
+    case "notice": {
+      // 壳层操作结果成条提示（检查点回滚报告、打点结果等），tone 缺省 info
+      const { id, seq } = nextId(state);
+      const tone =
+        ev.tone === "ok" || ev.tone === "error" ? ev.tone : "info";
+      return {
+        ...pushItem(state, {
+          kind: "marker",
+          id,
+          label: String(ev.label ?? ""),
+          tone,
+        }),
+        seq,
+      };
+    }
     case "agent_start":
       return { ...state, running: true };
     case "message_start": {
@@ -305,7 +320,7 @@ export function applyHostEvents(
   return s;
 }
 
-/** diff 卡的人工标记（本块只落状态；与检查点的真实回滚联动在下一块）。 */
+/** diff 卡的人工标记（接受只落标记；回滚由 App 经检查点真实恢复成功后落标记）。 */
 export function applyDiffMark(
   state: StreamState,
   toolCallId: string,

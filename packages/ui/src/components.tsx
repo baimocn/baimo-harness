@@ -5,8 +5,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import {
   PERMISSION_MODES,
+  type CheckpointDto,
   type HostSnapshotDto,
-  type MilestoneDto,
   type PermissionMode,
   type SessionMetaDto,
   type SessionStatsDto,
@@ -257,7 +257,7 @@ function DiffCard(props: {
     <div className="diff-card" data-testid="diff-card">
       <div className="diff-head">
         <span className="diff-path">{props.path}</span>
-        <span className="dim">标记：{props.mark === "pending" ? "未处理" : props.mark === "accepted" ? "已接受" : "已回滚（标记）"}</span>
+        <span className="dim">标记：{props.mark === "pending" ? "未处理" : props.mark === "accepted" ? "已接受" : "已回滚"}</span>
         <button
           type="button"
           data-testid="diff-accept"
@@ -269,7 +269,7 @@ function DiffCard(props: {
           type="button"
           data-testid="diff-rollback"
           onClick={() => props.onMark("rolledback")}
-          title="本块只落状态标记，与检查点的真实回滚联动在下一块"
+          title="把该文件恢复到最近检查点的状态（真实回滚，M-06）"
         >
           回滚
         </button>
@@ -365,7 +365,9 @@ export function RightPanel(props: {
   tab: RightTab;
   onTab: (t: RightTab) => void;
   state: StreamState | null;
-  milestones: MilestoneDto[];
+  checkpoints: CheckpointDto[];
+  onRollbackCheckpoint: (checkpointId: string) => void;
+  onManualCheckpoint: () => void;
 }) {
   const changes = props.state ? selectFileChanges(props.state) : [];
   const tabs: Array<{ id: RightTab; label: string }> = [
@@ -374,6 +376,7 @@ export function RightPanel(props: {
     { id: "checkpoints", label: "检查点" },
     { id: "plan", label: "计划" },
   ];
+  const checkpoints = [...props.checkpoints].reverse();
   return (
     <aside className="rightpanel" data-testid="right-panel">
       <div className="tabs">
@@ -415,16 +418,43 @@ export function RightPanel(props: {
         )}
         {props.tab === "checkpoints" && (
           <div data-testid="panel-checkpoints">
-            <p className="dim pad">
-              当前列出的是会话事件日志里程碑（真实落盘记录）；Git 快照检查点（M-06）在阶段 2 接入。
-            </p>
-            {props.milestones.length === 0 && (
-              <p className="dim pad">暂无里程碑。</p>
+            <div className="checkpoint-head">
+              <span className="dim">
+                工作区快照（存于数据目录，不进你的仓库）；运行开始/完成自动打点。
+              </span>
+              <button
+                type="button"
+                data-testid="checkpoint-create"
+                onClick={props.onManualCheckpoint}
+              >
+                手动打点
+              </button>
+            </div>
+            {checkpoints.length === 0 && (
+              <p className="dim pad">暂无检查点：发一轮指令或点「手动打点」生成。</p>
             )}
-            {props.milestones.map((m) => (
-              <div key={m.seq} className="change-row">
-                <span>{m.label}</span>
-                <span className="dim">{new Date(m.ts).toLocaleTimeString()}</span>
+            {checkpoints.map((c) => (
+              <div
+                key={c.id}
+                className="checkpoint-row"
+                data-testid="checkpoint-item"
+                data-checkpoint-id={c.id}
+              >
+                <div className="checkpoint-main">
+                  <span>{c.label}</span>
+                  <span className="dim">
+                    {new Date(c.createdAt).toLocaleTimeString()} · {c.fileCount} 个文件
+                    {c.skippedCount > 0 ? ` · ${c.skippedCount} 个跳过` : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  data-testid="checkpoint-rollback"
+                  onClick={() => props.onRollbackCheckpoint(c.id)}
+                  title="把工作区恢复到这个检查点的状态（回滚前会自动再留一张快照）"
+                >
+                  回滚
+                </button>
               </div>
             ))}
           </div>

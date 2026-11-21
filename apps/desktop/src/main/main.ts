@@ -22,7 +22,13 @@ import {
   type SessionHandle,
   type SessionMeta,
 } from "@baimo-harness/agent-host";
+import {
+  CheckpointStore,
+  type CheckpointManifest,
+  type RollbackReport,
+} from "@baimo-harness/core";
 import type {
+  CheckpointDto,
   HostSnapshotDto,
   MilestoneDto,
   PermissionMode,
@@ -143,6 +149,50 @@ const host = new AgentHost({
   workspaceDir,
   env: piHome ? { HOME: piHome } : {},
 });
+
+/** 检查点存储（M-06）：快照落在数据目录，不污染用户工作区。 */
+const checkpoints = new CheckpointStore(join(dataDir, "checkpoints"));
+/** 进行中的 prompt 承诺（按会话）：回滚前等运行结算用。 */
+const pendingRuns = new Map<string, Promise<void>>();
+
+function toCheckpointDto(m: CheckpointManifest): CheckpointDto {
+  return {
+    id: m.id,
+    sessionId: m.sessionId,
+    createdAt: m.createdAt,
+    label: m.label,
+    trigger: m.trigger,
+    fileCount: m.files.length,
+    totalBytes: m.files.reduce((sum, f) => sum + f.size, 0),
+    skippedCount: m.skipped.length,
+  };
+}
+
+function sessionWorkspace(sessionId: string): string {
+  const meta = host.listSessions().find((m) => m.id === sessionId);
+  return meta?.workspaceDir ?? workspaceDir;
+}
+
+/** 自动打点：失败不挡运行，但必须显形（推送给界面成条提示），不静默。 */
+function autoSnapshot(
+  sessionId: string,
+  label: string,
+  trigger: "run_start" | "run_settled",
+): void {
+  try {
+    const { created } = checkpoints.createSnapshot(
+      sessionId,
+      sessionWorkspace(sessionId),
+      { label, trigger },
+    );
+    if (created) send("checkpoint:changed", { sessionId });
+  } catch (err) {
+    send("checkpoint:error", {
+      sessionId,
+      message: `检查点${label}失败：${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
 
 const live = new Map<string, SessionHandle>();
 let activeSessionId: string | null = null;
@@ -282,20 +332,22 @@ function registerIpc(): void {
     return { events: normalized, milestones, recovery };
   });
 
-  ipcMain.handle("session:prompt", (_e, id: string, message: string) => {
+  ipcMain.handle("session:prompt", async (_e, id: string, message: string) => {
     const handle = live.get(id);
     if (!handle) return { accepted: false, error: "会话未在运行（历史会话请先点「继续会话」）" };
     if (handle.busy) return { accepted: false, error: "会话忙：上一轮尚未结算" };
-    handle.prompt(message).then(
-      (outcome) => {
+    // M-06：运行开始先给工作区打快照（改动前状态），结算后再打一张（改动后状态）
+    autoSnapshot(id, "运行开始", "run_start");
+    const runPromise = (async () => {
+      try {
+        const outcome = await handle.prompt(message);
         send("session:run-settled", {
           sessionId: id,
           ok: true,
           stopped: outcome.disposition === "aborted",
         });
         void pushStats(id);
-      },
-      (err: unknown) => {
+      } catch (err) {
         const e = err as { message?: string; code?: string };
         send("session:run-settled", {
           sessionId: id,
@@ -303,8 +355,12 @@ function registerIpc(): void {
           error: e?.message ?? String(err),
           code: e?.code,
         });
-      },
-    );
+      } finally {
+        autoSnapshot(id, "运行完成", "run_settled");
+        pendingRuns.delete(id);
+      }
+    })();
+    pendingRuns.set(id, runPromise);
     return { accepted: true };
   });
 
@@ -387,6 +443,75 @@ function registerIpc(): void {
     });
     return resp.data ?? null;
   });
+
+  /* ---------- 检查点（M-06） ---------- */
+
+  ipcMain.handle("checkpoint:list", (_e, id: string) => {
+    return checkpoints.listCheckpoints(id).map(toCheckpointDto);
+  });
+
+  ipcMain.handle("checkpoint:create", (_e, id: string) => {
+    const { checkpoint, created } = checkpoints.createSnapshot(
+      id,
+      sessionWorkspace(id),
+      { label: "手动打点", trigger: "manual" },
+    );
+    if (created) send("checkpoint:changed", { sessionId: id });
+    return { created, checkpoint: toCheckpointDto(checkpoint) };
+  });
+
+  ipcMain.handle(
+    "checkpoint:rollback",
+    async (_e, id: string, checkpointId: string): Promise<RollbackReport> => {
+      const handle = live.get(id);
+      if (handle?.busy) {
+        // PRD 5.4.4：回滚前先停止运行中等其结算
+        await handle.abort().catch(() => undefined);
+        await (pendingRuns.get(id) ?? Promise.resolve()).catch(() => undefined);
+      }
+      const ws = sessionWorkspace(id);
+      // 回滚本身也要可回滚：先给当前状态留一张自动快照（无变化时自动去重）
+      checkpoints.createSnapshot(id, ws, {
+        label: "回滚前自动快照",
+        trigger: "pre_rollback",
+      });
+      const report = checkpoints.rollback(id, ws, checkpointId);
+      send("checkpoint:changed", { sessionId: id });
+      return report;
+    },
+  );
+
+  ipcMain.handle(
+    "checkpoint:rollback-file",
+    (_e, id: string, path: string) => {
+      const handle = live.get(id);
+      if (handle?.busy) {
+        return { ok: false, error: "运行中，请先停止后再回滚文件" };
+      }
+      const latest = checkpoints.latestCheckpoint(id);
+      if (!latest) return { ok: false, error: "尚无检查点可回滚" };
+      const ws = sessionWorkspace(id);
+      // 工具参数里的路径可能是绝对路径：在工作区内则换算为相对路径，区外拒绝
+      let rel = path;
+      if (path.startsWith("/")) {
+        const prefix = ws.endsWith("/") ? ws : ws + "/";
+        if (!path.startsWith(prefix)) {
+          return { ok: false, error: `文件不在工作区内：${path}` };
+        }
+        rel = path.slice(prefix.length);
+      }
+      try {
+        const result = checkpoints.rollbackFile(id, ws, latest.id, rel);
+        send("checkpoint:changed", { sessionId: id });
+        return { ok: true, ...result };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
 }
 
 async function createWindow(): Promise<void> {

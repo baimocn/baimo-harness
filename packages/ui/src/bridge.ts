@@ -61,6 +61,27 @@ export interface SessionStatsDto {
   };
 }
 
+export interface CheckpointDto {
+  id: string;
+  sessionId: string;
+  createdAt: string;
+  label: string;
+  trigger: "run_start" | "run_settled" | "manual" | "pre_rollback" | "yolo_start";
+  fileCount: number;
+  totalBytes: number;
+  skippedCount: number;
+}
+
+export interface RollbackReportDto {
+  checkpointId: string;
+  restored: string[];
+  deleted: string[];
+  unchanged: number;
+  skippedUntouched: string[];
+  verified: boolean;
+  mismatches: string[];
+}
+
 export interface HostSnapshotDto {
   /** 随附 Pi 版本（读自 runtime 钉版包，读不到为「未知」）。 */
   kernelVersion: string;
@@ -128,7 +149,27 @@ export interface BaimoBridge {
   ): Promise<{ mode: PermissionMode }>;
   setModel(model: ModelRefDto): Promise<{ selectedModel: ModelRefDto }>;
   stats(id: string): Promise<SessionStatsDto | null>;
+  /** 检查点列表（M-06，真实快照数据，来自宿主数据目录）。 */
+  listCheckpoints(id: string): Promise<CheckpointDto[]>;
+  /** 手动打点：与最近检查点无差异时 created=false（不堆空检查点）。 */
+  createCheckpoint(
+    id: string,
+  ): Promise<{ created: boolean; checkpoint: CheckpointDto }>;
+  /** 整体回滚到某检查点（主进程会先停运行、先留回滚前快照）。 */
+  rollbackCheckpoint(
+    id: string,
+    checkpointId: string,
+  ): Promise<RollbackReportDto>;
+  /** diff 卡单文件回滚：恢复到最近检查点的该文件状态。 */
+  rollbackFile(
+    id: string,
+    path: string,
+  ): Promise<{ ok: boolean; action?: string; path?: string; error?: string }>;
   onSessionEvent(cb: (e: SessionEventPayload) => void): () => void;
+  onCheckpointsChanged(cb: (e: { sessionId: string }) => void): () => void;
+  onCheckpointError(
+    cb: (e: { sessionId: string; message: string }) => void,
+  ): () => void;
   onRunSettled(cb: (e: RunSettledPayload) => void): () => void;
   onProcessExit(cb: (e: ProcessExitPayload) => void): () => void;
   onStats(cb: (e: { sessionId: string; stats: SessionStatsDto }) => void): () => void;

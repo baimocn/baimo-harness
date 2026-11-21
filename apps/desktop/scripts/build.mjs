@@ -22,7 +22,7 @@ await esbuild.build({
   platform: "node",
   format: "esm",
   target: "node22",
-  external: ["electron", "@baimo-harness/agent-host"],
+  external: ["electron", "@baimo-harness/agent-host", "@baimo-harness/core"],
   outfile: join(dist, "main.js"),
   logLevel: "warning",
 });

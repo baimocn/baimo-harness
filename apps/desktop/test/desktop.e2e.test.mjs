@@ -165,11 +165,11 @@ test(
       const statsLine = await page.textContent('[data-testid="stats-line"]');
       assert.match(statsLine, /tokens 合计 [1-9]\d*/);
 
-      // 右栏：改动为空（bash 不产生文件改动，如实空态）；检查点有真实里程碑
+      // 右栏：改动为空（bash 不产生文件改动，如实空态）；检查点有真实快照（运行开始自动打点）
       await page.click('[data-testid="tab-changes"]');
       await waitText(page, '[data-testid="panel-changes"]', "暂无文件改动");
       await page.click('[data-testid="tab-checkpoints"]');
-      await waitText(page, '[data-testid="panel-checkpoints"]', "运行完成");
+      await waitText(page, '[data-testid="panel-checkpoints"]', "运行开始");
 
       await page.screenshot({
         path: join(assetsDir, "01-vertical-slice.png"),

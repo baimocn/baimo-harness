@@ -7,8 +7,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   BaimoBridge,
+  CheckpointDto,
   PermissionMode,
   ProcessExitPayload,
+  RollbackReportDto,
   RunSettledPayload,
   SessionEventPayload,
   SessionStatsDto,
@@ -40,6 +42,18 @@ const api: BaimoBridge = {
   setModel: (model: { provider: string; modelId: string }) =>
     ipcRenderer.invoke("model:set", model),
   stats: (id: string) => ipcRenderer.invoke("session:stats", id),
+  listCheckpoints: (id: string) => ipcRenderer.invoke("checkpoint:list", id),
+  createCheckpoint: (id: string) => ipcRenderer.invoke("checkpoint:create", id),
+  rollbackCheckpoint: (id: string, checkpointId: string) =>
+    ipcRenderer.invoke("checkpoint:rollback", id, checkpointId),
+  rollbackFile: (id: string, path: string) =>
+    ipcRenderer.invoke("checkpoint:rollback-file", id, path),
+  onCheckpointsChanged: (
+    cb: (e: { sessionId: string }) => void,
+  ) => subscribe("checkpoint:changed", cb),
+  onCheckpointError: (
+    cb: (e: { sessionId: string; message: string }) => void,
+  ) => subscribe("checkpoint:error", cb),
   onSessionEvent: (cb: (e: SessionEventPayload) => void) =>
     subscribe("session:event", cb),
   onRunSettled: (cb: (e: RunSettledPayload) => void) =>

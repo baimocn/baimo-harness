@@ -1,7 +1,1 @@
-{
-  "name": "@baimo-harness/core",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "description": "TODO: core"
-}
+{"description":"壳层领域逻辑：检查点快照、权限裁决等纯逻辑（无 Electron/Pi 依赖）","main":"dist/index.js","name":"@baimo-harness/core","private":true,"scripts":{"build":"tsc -p tsconfig.json"},"type":"module","types":"dist/index.d.ts","version":"0.0.0"}

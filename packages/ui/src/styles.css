@@ -92,6 +92,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .readonly-banner { background: #33301f; color: #e8d98a; padding: 5px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .btn-stop { border-color: var(--err); color: var(--err); }
+.checkpoint-head { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; }
+.checkpoint-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-top: 1px solid var(--border); }
+.checkpoint-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .stream { flex: 1; overflow-y: auto; padding: 12px; }
 .msg { max-width: 85%; padding: 8px 11px; border-radius: 8px; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
 .msg-user { background: #2a3242; margin-left: auto; }
