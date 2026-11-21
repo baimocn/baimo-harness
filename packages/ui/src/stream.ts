@@ -117,13 +117,20 @@ const FILE_TOOLS = new Set(["edit", "write", "read"]);
 
 function closeAssistant(state: StreamState): StreamState {
   if (!state.openAssistantId) return state;
+  const openId = state.openAssistantId;
   return {
     ...state,
-    items: state.items.map((it) =>
-      it.kind === "assistant" && it.id === state.openAssistantId
-        ? { ...it, streaming: false }
-        : it,
-    ),
+    // 只含工具调用、无文本的 assistant 消息不留空泡（Pi 会为这类消息也发 message_start）
+    items: state.items
+      .filter(
+        (it) =>
+          !(it.kind === "assistant" && it.id === openId && it.text === ""),
+      )
+      .map((it) =>
+        it.kind === "assistant" && it.id === openId
+          ? { ...it, streaming: false }
+          : it,
+      ),
     openAssistantId: null,
   };
 }

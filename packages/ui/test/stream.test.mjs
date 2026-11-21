@@ -39,6 +39,25 @@ test("流式文本：增量拼接成完整回复，message_end 收尾", () => {
   assert.equal(s.items[0].text, "你好");
 });
 
+test("只含工具调用的 assistant 消息不留空泡", () => {
+  let s = initialStreamState;
+  s = applyHostEvent(s, { type: "message_start", message: {} });
+  s = applyHostEvent(s, delta("有文本"));
+  s = applyHostEvent(s, { type: "message_end", message: {} });
+  // 工具调用轮：message_start 后直接 message_end，无任何文本增量
+  s = applyHostEvent(s, { type: "message_start", message: {} });
+  s = applyHostEvent(s, {
+    type: "tool_execution_start",
+    toolCallId: "x1",
+    toolName: "bash",
+    args: { command: "true" },
+  });
+  s = applyHostEvent(s, { type: "message_end", message: {} });
+  const assistants = s.items.filter((i) => i.kind === "assistant");
+  assert.equal(assistants.length, 1);
+  assert.equal(assistants[0].text, "有文本");
+});
+
 test("工具卡生命周期：start 建卡（摘要=命令）→ end 落结果与成败", () => {
   let s = initialStreamState;
   s = applyHostEvent(s, {
