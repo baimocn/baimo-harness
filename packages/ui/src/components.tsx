@@ -1506,7 +1506,7 @@ export function ContextRing(props: { stats: SessionStatsDto | null }) {
         )}
         <span className="dim" data-testid="stats-line">
           {props.stats
-            ? `本会话 ${props.stats.tokens.total} tokens · 费用 ${props.stats.cost.toFixed(4)}`
+            ? `本会话 tokens 合计 ${props.stats.tokens.total} · 费用 ${props.stats.cost.toFixed(4)}`
             : "用量未接入（会话未运行或已断开）"}
         </span>
       </div>
