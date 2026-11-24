@@ -289,10 +289,18 @@ input:focus, textarea:focus, select:focus { border-color: var(--border-strong); 
 .checkpoint-row::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
 .checkpoint-head + .checkpoint-row::before { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 .checkpoint-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.stream { flex: 1; overflow-y: auto; padding: var(--sp-3); }
-.msg { max-width: min(85%, 820px); padding: var(--sp-2) 11px; border-radius: var(--r-lg); margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
-.msg-user { background: #232c3d; border: 1px solid #303a4f; margin-left: auto; }
-.msg-assistant { background: var(--panel-2); border: 1px solid var(--border); }
+.stream { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4); }
+.msg { margin: 0 0 10px; line-height: 1.6; }
+/* 助手文本（第十块去气泡）：无框无底、直接落在基底上成段，限行宽保可读性；
+ * 框只留给工具卡/diff/审批卡（对标 ZCode 阅读区排版）。 */
+.msg-assistant { max-width: 820px; padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+/* 用户消息：保留低调气泡——品牌墨色弱调表面，与助手文本形成角色区分。 */
+.msg-user {
+  max-width: min(75%, 640px); margin-left: auto; padding: var(--sp-2) 11px;
+  border-radius: var(--r-lg); white-space: pre-wrap; word-break: break-word;
+  background: color-mix(in srgb, var(--brand) 13%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--brand) 24%, transparent);
+}
 .cursor { display: inline-block; width: 7px; height: 1em; margin-left: 2px; background: var(--accent); vertical-align: -0.12em; animation: cursor-blink 1s steps(2, start) infinite; }
 @keyframes cursor-blink { 50% { opacity: 0; } }
 .tool-card { border: 1px solid var(--card-border); border-radius: var(--r-lg); margin: 0 0 10px; background: var(--card); box-shadow: var(--elev-1); overflow: hidden; }
