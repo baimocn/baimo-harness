@@ -8,7 +8,8 @@
   "scripts": {
     "build": "npm run build -w @baimo-harness/core && npm run build -w @baimo-harness/agent-host && npm run build -w @baimo-harness/ui && npm run build -w @baimo-harness/desktop",
     "test:e2e": "npm run build && node --test \"packages/rpc/test/*.test.mjs\" \"packages/core/test/*.test.mjs\" \"apps/agent-host/test/*.test.mjs\" \"packages/ui/test/*.test.mjs\" && node apps/desktop/scripts/run-e2e.mjs",
-    "test:regression": "npm run build && node --test \"packages/rpc/test/*.test.mjs\" \"packages/core/test/*.test.mjs\" \"apps/agent-host/test/*.test.mjs\" \"packages/ui/test/*.test.mjs\" \"tests/regression/*.test.mjs\" && node apps/desktop/scripts/run-e2e.mjs"
+    "test:regression": "npm run build && node --test \"packages/rpc/test/*.test.mjs\" \"packages/core/test/*.test.mjs\" \"apps/agent-host/test/*.test.mjs\" \"packages/ui/test/*.test.mjs\" \"tests/regression/*.test.mjs\" && node apps/desktop/scripts/run-e2e.mjs",
+    "test:local-model": "npm run build && BAIMO_LOCAL_MODEL=1 node --test \"tests/local-model/*.test.mjs\""
   },
   "type": "module",
   "version": "0.0.0",
