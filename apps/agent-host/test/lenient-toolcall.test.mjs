@@ -29,6 +29,10 @@ import {
   startLenientToolCallProxy,
 } from "../dist/index.js";
 import {
+  createStubModelServer,
+  stubModelsJson,
+} from "./fixtures/stub-model-server.mjs";
+import {
   createLenientModelServer,
   lenientModelsJson,
   LENIENT_DANGER_COMMAND,
@@ -691,5 +695,57 @@ test(
       JSON.stringify(events).includes("审批未通过"),
       "拒绝理由应作为工具结果回到 agent",
     );
+  },
+);
+
+/* ================= D. 宿主记账时序（第九块验收实证修复） ================= */
+
+test(
+  "D1 记账时序：prompt resolve 时本轮账目已落盘（连跑两轮、逐轮即时读账）",
+  { timeout: PI_TEST_TIMEOUT },
+  async (t) => {
+    // 第九块 3B 验收实证：旧实现记账 void 异步甩出、与 resolve 竞态，
+    // prompt 返回后紧接着的同步读账丢了第二轮的账（尝试 2 全程走通、
+    // 只栽在账本条数）。本用例钉住契约：每轮 prompt 一 resolve，
+    // 该轮条目必须已在账本里，不许靠等 costRecorded 事件兜底。
+    const dataDir = mkdtempSync(join(tmpdir(), "baimo-lenient-cost-data-"));
+    const workDir = mkdtempSync(join(tmpdir(), "baimo-lenient-cost-work-"));
+    const stub = await createStubModelServer();
+    t.after(async () => {
+      await stub.close();
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(workDir, { recursive: true, force: true });
+    });
+    const agentDir = join(dataDir, "pi-agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "models.json"), stubModelsJson(stub.url), "utf8");
+    const host = new AgentHost({ dataDir, env: { HOME: workDir } });
+    await host.start();
+    t.after(async () => {
+      await host.close().catch(() => undefined);
+    });
+    const session = await host.openSession({
+      title: "记账时序",
+      workspaceDir: workDir,
+      piArgs: ["--provider", "stub", "--model", "stub-model"],
+      modelRef: { provider: "stub", modelId: "stub-model" },
+    });
+    const entriesNow = () =>
+      host.costLedger.entries().filter((e) => e.sessionId === session.id);
+    const o1 = await session.prompt("第一轮 [[stub:bash:echo one]]", {
+      timeoutMs: 120_000,
+    });
+    assert.equal(o1.disposition, "started");
+    assert.equal(entriesNow().length, 1, "第一轮 resolve 时账目应已落盘");
+    const o2 = await session.prompt("第二轮 [[stub:bash:echo two]]", {
+      timeoutMs: 120_000,
+    });
+    assert.equal(o2.disposition, "started");
+    const entries = entriesNow();
+    assert.equal(entries.length, 2, "第二轮 resolve 时账目应已落盘");
+    for (const e of entries) {
+      const tk = e.tokens ?? {};
+      assert.ok((tk.total ?? 0) > 0, "每笔账目 tokens 应有真实计数");
+    }
   },
 );

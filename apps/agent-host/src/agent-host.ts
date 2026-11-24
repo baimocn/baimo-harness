@@ -696,8 +696,12 @@ export class SessionHandle extends EventEmitter {
     if (record.type === "agent_settled") {
       this.run = null;
       if (run.timer) clearTimeout(run.timer);
-      // M-07：本轮记账（差分）在结算后异步完成，结果经 costRecorded 事件推送
-      void this.recordRunCost(run);
+      // M-07：本轮记账（差分）落盘完成后才 resolve 本轮 prompt——调用方在
+      // prompt 返回后读账必须读得到本轮条目（第九块 3B 验收实证：旧实现把
+      // 记账 void 异步甩出、resolve 与之竞态，紧接着的同步读账会丢账）。
+      // recordRunCost 内部已全量兜底（失败落 lifecycle cost_accounting_failed），
+      // 这里再兜一层保证 resolve 必达。
+      let outcome: PromptOutcome;
       if (run.fuse) {
         // 预算熔断：Pi 仍以 agent_settled 收尾，但记账必须是「熔断停止」。
         this.store.append(this.id, "lifecycle", {
@@ -705,36 +709,38 @@ export class SessionHandle extends EventEmitter {
           eventsReceived: run.eventsReceived,
           fuse: run.fuse,
         });
-        run.resolve({
+        outcome = {
           disposition: "budget_fused",
           eventsReceived: run.eventsReceived,
           settled: true,
           fuse: run.fuse,
-        });
-        return;
-      }
-      if (run.abortRequested) {
+        };
+      } else if (run.abortRequested) {
         // 用户停止：Pi 仍以 agent_settled 收尾（实测），但记账必须是「已停止」。
         this.store.append(this.id, "lifecycle", {
           event: "run_stopped",
           eventsReceived: run.eventsReceived,
         });
-        run.resolve({
+        outcome = {
           disposition: "aborted",
           eventsReceived: run.eventsReceived,
           settled: true,
+        };
+      } else {
+        this.store.append(this.id, "lifecycle", {
+          event: "run_settled",
+          eventsReceived: run.eventsReceived,
         });
-        return;
+        outcome = {
+          disposition: "started",
+          eventsReceived: run.eventsReceived,
+          settled: true,
+        };
       }
-      this.store.append(this.id, "lifecycle", {
-        event: "run_settled",
-        eventsReceived: run.eventsReceived,
-      });
-      run.resolve({
-        disposition: "started",
-        eventsReceived: run.eventsReceived,
-        settled: true,
-      });
+      void (async () => {
+        await this.recordRunCost(run).catch(() => undefined);
+        run.resolve(outcome);
+      })();
     }
   }
 
