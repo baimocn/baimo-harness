@@ -31,9 +31,14 @@ OLLAMA_HOST=127.0.0.1:11434 ~/.local/ollama/bin/ollama serve
 
 ```bash
 BAIMO_LOCAL_MODEL_URL=http://localhost:11434/v1 \
-BAIMO_LOCAL_MODEL_ID=qwen2.5-coder:0.5b \
+BAIMO_LOCAL_MODEL_ID=qwen2.5-coder:3b \
   <启动桌面应用>
 ```
+
+`BAIMO_LOCAL_MODEL_ID` 缺省即 qwen2.5-coder:3b（第九块起）；0.5B
+仍可经该 env 指定。本地模式下宿主自动开启宽容工具调用代理
+（见下节），models.json 里的回环端点会被临时改写指向宿主代理、
+宿主关闭时还原，用户无需手动配置。
 
 启动时主进程把 provider `ollama` 写进 Pi 的 `models.json`
 （`api: "openai-completions"`、占位 key `ollama`，端点忽略它），
@@ -66,3 +71,20 @@ npm run test:local-model
 写成 JSON 纯文本、从未发出可解析的 tool_call，全链路卡在第一步；
 见 `docs/test-runs/2026-11-24-local-model.md` 与
 `docs/test-runs/2026-11-24-local-model-3b.md`。
+
+## 宽容工具调用解析（第九块）与收官结论
+
+小模型把工具调用写成 JSON 纯文本是格式问题，产品化解法是给
+harness 加一层宽容解析：AgentHost 托管一个本地 OpenAI 兼容代理
+（配置开关 `lenientProxy`，桌面本地模式自动开启），Pi 指向代理、
+代理转发 Ollama，仅在响应无原生 tool_calls 时把文本里的裸 JSON /
+```json 围栏块调用转成原生 tool_calls（工具名须在清单内、参数过
+模式回声清洗与 schema 基本校验，拿不准就不转、绝不凭猜执行）。
+转换后的调用在 Pi 内与原生调用走同一通路：审批门与计划门照样
+拦截裁决（回归内有 E2E 实证）。
+
+收官实跑（2026-11-24）：**3B 验收通过**（第 2 次尝试全链走通，
+账本 2 笔、回滚 verified），落盘/回滚/账本取得真模型证据；
+**0.5B 附带验收仍未通过**——它臆造清单外工具名 `create_file`，
+属能力问题、解析器按规则拒绝放水。详见
+`docs/test-runs/2026-11-24-lenient-toolcall.md`。

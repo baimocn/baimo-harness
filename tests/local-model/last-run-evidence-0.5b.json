@@ -1,0 +1,62 @@
+{
+  "baseUrl": "http://localhost:11434/v1",
+  "modelId": "qwen2.5-coder:0.5b",
+  "startedAt": "2026-11-24T06:23:10.563Z",
+  "attempts": [
+    {
+      "attempt": 1,
+      "phases": {
+        "create": {
+          "elapsedMs": 31144,
+          "disposition": "started",
+          "planSelects": 0,
+          "planAtSelectStatus": null,
+          "tools": []
+        }
+      },
+      "sessionId": "6ac5a7ce-f192-4395-93b4-f34ea1635448",
+      "formatHint": "",
+      "error": "裁决时计划应已落盘为 awaiting_approval（事前计划）\n+ actual - expected\n\n+ undefined\n- 'awaiting_approval'\n",
+      "rawAssistant": [
+        "```json\n{\n  \"name\": \"create_file\",\n  \"arguments\": {\n    \"path\": \"/tmp/baimo-local-work-WlH154/greeting.txt\",\n    \"content\": \"hello baimo\\nversion: 1\\nstatus: draft\\n\"\n  }\n}\n```"
+      ],
+      "allTools": []
+    },
+    {
+      "attempt": 2,
+      "phases": {
+        "create": {
+          "elapsedMs": 6880,
+          "disposition": "started",
+          "planSelects": 0,
+          "planAtSelectStatus": null,
+          "tools": []
+        }
+      },
+      "sessionId": "7bf29847-2e94-485b-acfa-8b41fd3610dc",
+      "formatHint": "注意：调用工具时必须使用工具调用格式，不要把调用写成普通文字或代码块。",
+      "error": "裁决时计划应已落盘为 awaiting_approval（事前计划）\n+ actual - expected\n\n+ undefined\n- 'awaiting_approval'\n",
+      "rawAssistant": [
+        "```json\n{\n  \"name\": \"create_file\",\n  \"arguments\": {\n    \"path\": \"/tmp/baimo-local-work-WlH154/greeting.txt\",\n    \"content\": \"hello baimo\\nversion: 1\\nstatus: draft\\n\"\n  }\n}\n```"
+      ],
+      "allTools": []
+    },
+    {
+      "attempt": 3,
+      "phases": {},
+      "sessionId": "a59ecee6-5498-4228-a59c-d018aebb59cd",
+      "formatHint": "注意：调用工具时必须严格使用 <tool_call> 工具调用格式输出，例如调用 submit_plan 时输出 <tool_call>{\"name\": \"submit_plan\", \"arguments\": {...}}</tool_call>，不要输出 ```json 代码块，不要用普通文字代替工具调用。",
+      "error": "RPC 请求 prompt 超时（1200000ms 内无响应）",
+      "rawAssistant": [
+        "",
+        "",
+        "",
+        ""
+      ],
+      "allTools": [
+        "submit_plan"
+      ]
+    }
+  ],
+  "finishedAt": "2026-11-24T06:43:51.951Z"
+}
