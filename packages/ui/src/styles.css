@@ -190,11 +190,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--border-strong); 
 .main-row { display: flex; flex: 1; min-height: 0; }
 
 /* 顶栏 */
+/* 顶栏三组（第十块）：左 品牌+工作区（唯一锚点）／中 模式分段／右 模型·费用·状态（安静次级） */
 .topbar {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px;
   padding: 6px var(--sp-3); background: var(--header); border-bottom: 1px solid var(--border);
 }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 10px; }
+.topbar-left { justify-self: start; }
+.topbar-right { justify-self: end; }
 .brand-wrap { display: inline-flex; align-items: center; gap: 7px; }
 .brand-mark { color: var(--brand); flex-shrink: 0; }
 .brand { font-weight: 700; font-size: var(--fs-14); letter-spacing: 0.02em; }
@@ -214,12 +217,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--border-strong); 
 .mode-btn.active.mode-build { background: var(--mode-build); }
 .mode-btn.active.mode-yolo { background: var(--mode-yolo); }
 .topbar-alert {
-  flex-basis: 100%; background: #4a1717; color: #ffb3b3;
+  grid-column: 1 / -1; background: #4a1717; color: #ffb3b3;
   border: 1px solid rgba(224, 108, 117, 0.35);
   border-radius: var(--r-sm); padding: var(--sp-1) var(--sp-2); font-size: var(--fs-12);
 }
-.model-select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 4px; }
-.run-status { border: 1px solid var(--border); border-radius: var(--r-pill); padding: 2px 10px; color: var(--dim); font-size: var(--fs-12); }
+.model-select { background: var(--surface); color: var(--dim); border: 1px solid var(--card-border); border-radius: var(--r-md); padding: 4px 6px; }
+.model-select:hover { color: var(--text); }
+/* 运行状态降为安静的次级文字（不再用描边胶囊抢注意力） */
+.run-status { padding: 2px 0; color: var(--faint); font-size: var(--fs-12); white-space: nowrap; }
 
 /* 左栏 */
 .sidebar {

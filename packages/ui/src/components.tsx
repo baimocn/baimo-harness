@@ -191,7 +191,7 @@ export function TopBar(props: {
           <span
             className="cost-readout"
             data-testid="cost-readout"
-            title="成本账本（M-07）：按会话统计与定价折算的真实花费（本会话 · 今日）"
+            title="成本账本：按会话统计与定价折算的真实花费（本会话 · 今日）"
           >
             {props.costLabel}
           </span>
