@@ -9,19 +9,62 @@ import {
   ChevronRight,
   ChevronUp,
   Circle,
+  FileDiff,
+  Folder,
+  FolderOpen,
+  History,
+  Hourglass,
+  ListTodo,
   LoaderCircle,
+  MessagesSquare,
   Pause,
   Play,
   Plus,
+  Puzzle,
   RotateCcw,
   Send,
   ShieldAlert,
+  ShieldCheck,
   SkipBack,
   SkipForward,
   Square,
+  SquareTerminal,
   Undo2,
+  Wallet,
   X,
 } from "lucide-react";
+
+/* ---------------- 通用呈现：空状态与加载行 ---------------- */
+
+/**
+ * 设计化空状态：图标 + 一句结论 + 一句方向（下一步去哪/做什么）。
+ * 取代「白板 + 一行灰字」的占位式呈现；文案口径：给方向不给情绪。
+ */
+export function EmptyState(props: {
+  icon: ReactNode;
+  title: string;
+  hint?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="empty-state">
+      <span className="empty-icon">{props.icon}</span>
+      <span className="empty-title">{props.title}</span>
+      {props.hint && <span className="empty-hint">{props.hint}</span>}
+      {props.children}
+    </div>
+  );
+}
+
+/** 加载行：转圈图标 + 文案，取代裸「加载中…」灰字。 */
+export function LoadingRow(props: { label: string }) {
+  return (
+    <p className="loading-row">
+      <LoaderCircle size={13} className="icon-spin" />
+      {props.label}
+    </p>
+  );
+}
 import {
   PERMISSION_MODES,
   type ApprovalChoice,
@@ -70,9 +113,9 @@ export function TopBar(props: {
     <header className="topbar" data-testid="topbar">
       <div className="topbar-left">
         <span className="brand">白墨 Harness</span>
-        <span className="dim">{wsName}</span>
-        <span className="dim" title="Git 集成在阶段 2 接入">
-          分支：未接入
+        <span className="ws-chip" title={`工作区：${snapshot.workspaceDir}`}>
+          <Folder size={12} />
+          {wsName}
         </span>
         {snapshot.stubMode && <span className="badge-stub">桩模型模式</span>}
       </div>
@@ -108,7 +151,7 @@ export function TopBar(props: {
               );
               if (found) props.onModelChange(found.provider, found.modelId);
             }}
-            title="模型（应用于新会话；会话内热切换下一块接入）"
+            title="模型（应用于新会话）"
           >
             {snapshot.availableModels.map((m) => (
               <option
@@ -186,7 +229,11 @@ export function SessionList(props: {
       </div>
       <div className="session-scroll">
         {props.sessions.length === 0 && (
-          <p className="dim pad">暂无会话，点「新建会话」开始。</p>
+          <EmptyState
+            icon={<MessagesSquare size={17} />}
+            title="暂无会话"
+            hint="点右上角「新建会话」，开始第一轮任务。"
+          />
         )}
         {groups.map(([group, list]) => (
           <div key={group}>
@@ -223,11 +270,13 @@ export function SessionList(props: {
         ))}
       </div>
       <div className="sidebar-foot">
-        <div className="trash-head">
-          回收站
-          <span className="dim">（壳层标记，M-01）</span>
-        </div>
-        {props.trashed.length === 0 && <p className="dim pad">回收站为空，会话完整性正常。</p>}
+        <div className="trash-head">回收站</div>
+        {props.trashed.length === 0 && (
+          <p className="trash-empty">
+            <ShieldCheck size={12} />
+            回收站为空 · 会话完整性正常
+          </p>
+        )}
         {props.trashed.map((s) => (
           <div key={s.id} className="trash-item" data-testid="trash-item">
             <span className="session-title">{s.title}</span>
@@ -242,7 +291,7 @@ export function SessionList(props: {
             </button>
           </div>
         ))}
-        <div className="sidebar-links dim">闲时队列 · 插件在右栏页签（阶段 3 已接入）</div>
+        <div className="sidebar-links dim">闲时队列、插件与账本在右栏页签</div>
       </div>
     </aside>
   );
@@ -352,7 +401,11 @@ export function StreamView(props: {
   return (
     <div className="stream" data-testid="stream">
       {state.items.length === 0 && (
-        <p className="dim pad">执行流为空。在下方输入一条指令开始。</p>
+        <EmptyState
+          icon={<SquareTerminal size={17} />}
+          title="执行流为空"
+          hint="在下方输入一条指令，agent 的执行过程会实时出现在这里。"
+        />
       )}
       {state.items.map((it) => {
         switch (it.kind) {
@@ -457,7 +510,7 @@ export function IdlePanel(props: {
   if (!view) {
     return (
       <div data-testid="panel-idle">
-        <p className="dim pad">闲时队列加载中…</p>
+        <LoadingRow label="闲时队列加载中…" />
       </div>
     );
   }
@@ -476,7 +529,7 @@ export function IdlePanel(props: {
           启用闲时队列（全局空闲时自动执行）
         </label>
         <span className="dim">
-          未经启用绝不自启动（D-01）。排队 {queuedCount} 条
+          未经启用绝不自启动。排队 {queuedCount} 条
           {runningCount > 0 ? ` · 执行中 ${runningCount} 条` : ""}。任务走与
           前台相同的链路：检查点自动打点、审批/计划照常、成本入账、超预算熔断停摆。
           前台任务到来时正在跑的闲时任务会让路回队列。
@@ -535,7 +588,11 @@ export function IdlePanel(props: {
       </div>
       <div className="idle-items">
         {view.items.length === 0 && (
-          <p className="dim pad">队列为空：把不紧急的活丢进来，空闲时自动跑。</p>
+          <EmptyState
+            icon={<Hourglass size={17} />}
+            title="队列为空"
+            hint="把不紧急的活投递进来，全局空闲时会自动按序执行。"
+          />
         )}
         {view.items.map((it) => (
           <div
@@ -618,14 +675,18 @@ export function PluginsPanel(props: {
   const plugins = props.plugins;
   return (
     <div data-testid="panel-plugins">
-      <p className="dim pad">
-        插件 = Pi 扩展（本地目录扫描）。启停落盘保存，对**新建或续接**的
+      <p className="panel-note">
+        插件 = Pi 扩展（本地目录扫描）。启停落盘保存，对<strong>新建或续接</strong>的
         会话生效，进行中的会话不变。加载失败的插件会让会话启动失败，
         并在报错里点名该插件与原因——坏插件也会先在本面板显形。
       </p>
-      {plugins === null && <p className="dim pad">插件目录加载中…</p>}
+      {plugins === null && <LoadingRow label="插件目录加载中…" />}
       {plugins !== null && plugins.length === 0 && (
-        <p className="dim pad">插件目录为空：把扩展 .mjs 文件放进数据目录的 plugins/ 子目录即可。</p>
+        <EmptyState
+          icon={<Puzzle size={17} />}
+          title="插件目录为空"
+          hint="把扩展 .mjs 文件放进数据目录的 plugins/ 子目录，新建会话时加载。"
+        />
       )}
       {(plugins ?? []).map((p) => (
         <div
@@ -707,7 +768,7 @@ export function LedgerPanel(props: {
   if (!view) {
     return (
       <div data-testid="panel-ledger">
-        <p className="dim pad">成本账本加载中…</p>
+        <LoadingRow label="成本账本加载中…" />
       </div>
     );
   }
@@ -832,7 +893,11 @@ export function LedgerPanel(props: {
         <h4>最近账目</h4>
         <div data-testid="ledger-entries">
           {view.recentEntries.length === 0 && (
-            <p className="dim">暂无账目：跑一轮运行后按差分自动记账。</p>
+            <EmptyState
+              icon={<Wallet size={17} />}
+              title="暂无账目"
+              hint="跑完一轮运行后，宿主会按会话统计差分自动记账。"
+            />
           )}
           {view.recentEntries.map((e, i) => (
             <div key={`${e.ts}-${i}`} className="ledger-entry" data-testid="ledger-entry">
@@ -1122,9 +1187,11 @@ export function RightPanel(props: {
         {props.tab === "changes" && (
           <div data-testid="panel-changes">
             {changes.length === 0 ? (
-              <p className="dim pad">
-                本会话暂无文件改动（工具事件里还没有 edit/write 成功记录）。
-              </p>
+              <EmptyState
+                icon={<FileDiff size={17} />}
+                title="本会话暂无文件改动"
+                hint="工具事件里还没有 edit/write 成功记录；agent 改动文件后会汇总到这里。"
+              />
             ) : (
               changes.map((c) => (
                 <div key={c.toolCallId} className="change-row">
@@ -1139,7 +1206,11 @@ export function RightPanel(props: {
         )}
         {props.tab === "files" && (
           <div data-testid="panel-files">
-            <p className="dim pad">文件树占位 —— 本块未实现，后续阶段接入（结构占位）。</p>
+            <EmptyState
+              icon={<FolderOpen size={17} />}
+              title="文件树尚未接入"
+              hint="该页签为后续阶段预留。当前查看改动请用「改动」页签，回滚工作区请用「检查点」页签。"
+            />
           </div>
         )}
         {props.tab === "checkpoints" && (
@@ -1157,7 +1228,11 @@ export function RightPanel(props: {
               </button>
             </div>
             {checkpoints.length === 0 && (
-              <p className="dim pad">暂无检查点：发一轮指令或点「手动打点」生成。</p>
+              <EmptyState
+                icon={<History size={17} />}
+                title="暂无检查点"
+                hint="发送一轮指令后会自动打点，也可以点上方「手动打点」立即创建。"
+              />
             )}
             {checkpoints.map((c) => (
               <div
@@ -1204,9 +1279,11 @@ export function RightPanel(props: {
               </span>
             </div>
             {!props.planView?.plan ? (
-              <p className="dim pad">
-                本会话暂无计划：开启「计划先行」后发一条任务，agent 会先提交计划到这里。
-              </p>
+              <EmptyState
+                icon={<ListTodo size={17} />}
+                title="本会话暂无计划"
+                hint="开启上方「计划先行」后发送任务，agent 会先把计划提交到这里待你批准。"
+              />
             ) : (
               <div className="pad">
                 <div className="plan-head">
@@ -1575,7 +1652,7 @@ export function StatusBar(props: {
       <span className="dim">会话存储：{props.dataDir}</span>
       <span className="spacer" />
       <span className="dim" data-testid="mode-note">
-        审批门已接入（M-02）：写操作按当前模式裁决；计划先行见「计划」页签（M-03）
+        写操作按当前权限模式裁决 · 计划先行在「计划」页签
       </span>
     </footer>
   );
