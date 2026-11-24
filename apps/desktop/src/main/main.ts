@@ -129,6 +129,14 @@ const workspaceDir =
 const stubUrl = process.env.BAIMO_STUB_MODEL_URL ?? null;
 const piHome = process.env.BAIMO_PI_HOME ?? null;
 const stubMode = stubUrl !== null;
+/** 本地真模型模式（第七块）：env 指向本机回环推理端点（如 Ollama
+ * http://localhost:11434/v1），模型 id 可经 BAIMO_LOCAL_MODEL_ID 覆盖。
+ * 与桩模式并列，靠 env 切换；端点只许回环，推理不出本机。 */
+const localModelUrl = process.env.BAIMO_LOCAL_MODEL_URL ?? null;
+const localModelId =
+  process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:3b";
+const LOCAL_REF = { provider: "ollama", modelId: localModelId };
+const localMode = localModelUrl !== null;
 
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(workspaceDir, { recursive: true });
@@ -159,27 +167,33 @@ function kernelVersion(): string {
   }
 }
 
-/** 桩模式：在宿主启动前把 models.json 写进 Pi 配置目录（与测试 fixture 同形）。 */
+/** 桩/本地模型模式：在宿主启动前把 models.json 写进 Pi 配置目录
+ * （桩条目与测试 fixture 同形；本地真模型条目按 Pi 文档的 Ollama 兼容
+ * 端点形态，占位 key 由端点忽略）。两者可并存，模型选择器里切换。 */
 function prepareStubModels(): void {
-  if (!stubUrl) return;
+  if (!stubUrl && !localModelUrl) return;
+  const providers: Record<string, unknown> = {};
+  if (stubUrl) {
+    providers.stub = {
+      baseUrl: stubUrl,
+      api: "openai-completions",
+      apiKey: "stub-key",
+      models: [{ id: "stub-model" }],
+    };
+  }
+  if (localModelUrl) {
+    providers.ollama = {
+      baseUrl: localModelUrl,
+      api: "openai-completions",
+      apiKey: "ollama",
+      models: [{ id: localModelId }],
+    };
+  }
   const agentDir = join(dataDir, "pi-agent");
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(
     join(agentDir, "models.json"),
-    JSON.stringify(
-      {
-        providers: {
-          stub: {
-            baseUrl: stubUrl,
-            api: "openai-completions",
-            apiKey: "stub-key",
-            models: [{ id: "stub-model" }],
-          },
-        },
-      },
-      null,
-      2,
-    ) + "\n",
+    JSON.stringify({ providers }, null, 2) + "\n",
     "utf8",
   );
 }
@@ -472,7 +486,10 @@ function toDto(meta: SessionMeta): SessionMetaDto {
 }
 
 function selectedModel(): { provider: string; modelId: string } | null {
-  return settings.value.selectedModel ?? (stubMode ? STUB_REF : null);
+  return (
+    settings.value.selectedModel ??
+    (stubMode ? STUB_REF : localMode ? LOCAL_REF : null)
+  );
 }
 
 function snapshot(): HostSnapshotDto {
@@ -483,9 +500,12 @@ function snapshot(): HostSnapshotDto {
     workspaceDir,
     stubMode,
     permissionMode: settings.value.permissionMode,
-    availableModels: stubMode
-      ? [{ ...STUB_REF, label: "stub-model（本地桩）" }]
-      : [],
+    availableModels: [
+      ...(stubMode ? [{ ...STUB_REF, label: "stub-model（本地桩）" }] : []),
+      ...(localMode
+        ? [{ ...LOCAL_REF, label: `${localModelId}（本地真模型）` }]
+        : []),
+    ],
     selectedModel: selectedModel(),
     sessions: metas.filter((m) => !m.trashed),
     trashedSessions: metas.filter((m) => m.trashed),
