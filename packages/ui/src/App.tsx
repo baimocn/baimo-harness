@@ -944,6 +944,7 @@ export function App({ bridge }: { bridge: BaimoBridge }) {
               </button>
               <button
                 type="button"
+                className="btn-danger-fill"
                 data-testid="confirm-delete"
                 onClick={handleTrashConfirm}
               >

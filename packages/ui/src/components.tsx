@@ -949,6 +949,7 @@ export function ApprovalCard(props: {
       <div className="approval-actions">
         <button
           type="button"
+          className="btn-primary-warn"
           data-testid="approval-allow-once"
           onClick={() => props.onRespond("once")}
         >
@@ -1074,6 +1075,7 @@ export function PlanCard(props: {
         <div className="approval-actions">
           <button
             type="button"
+            className="btn-plan"
             data-testid="plan-approve"
             onClick={() => props.onSelect("approve")}
           >
@@ -1123,6 +1125,7 @@ export function PlanEditorModal(props: {
           </button>
           <button
             type="button"
+            className="btn-primary"
             data-testid="plan-editor-save"
             onClick={() => props.onSubmit(text)}
           >
