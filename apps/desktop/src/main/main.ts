@@ -186,7 +186,9 @@ function prepareStubModels(): void {
       baseUrl: localModelUrl,
       api: "openai-completions",
       apiKey: "ollama",
-      models: [{ id: localModelId }],
+      // temperature 0：小模型在采样下工具调用格式漂移严重，
+      // 探针实证 temp=0 时输出稳定（见 docs/test-runs/2026-11-24-local-model.md）。
+      models: [{ id: localModelId, samplingParams: { temperature: 0 } }],
     };
   }
   const agentDir = join(dataDir, "pi-agent");

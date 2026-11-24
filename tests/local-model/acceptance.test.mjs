@@ -65,6 +65,16 @@ const PROMPT_CREATE =
 const PROMPT_MODIFY =
   `把 ${FILE_NAME} 的第二行改成 version: 2，其他行保持不变。` +
   "先用 submit_plan 提交计划，批准后执行，并用 plan_progress 回报进度。";
+/** 重试时逐步加重的格式提示（探针实证 0.5B 易把工具调用写成纯文本 JSON，
+ * 模板要求的 <tool_call> 包裹格式必须在措辞里点明——属任务措辞调整，
+ * 不改变任务规格本身）。attempt 1 不带，2 带简版，3 带示例。 */
+const FORMAT_HINTS = [
+  "",
+  "注意：调用工具时必须使用工具调用格式，不要把调用写成普通文字或代码块。",
+  "注意：调用工具时必须严格使用 <tool_call> 工具调用格式输出，" +
+    '例如调用 submit_plan 时输出 <tool_call>{"name": "submit_plan", "arguments": {...}}</tool_call>，' +
+    "不要输出 ```json 代码块，不要用普通文字代替工具调用。",
+];
 
 function localModelsJson() {
   return JSON.stringify(
@@ -74,7 +84,9 @@ function localModelsJson() {
           baseUrl: BASE_URL,
           api: "openai-completions",
           apiKey: "ollama",
-          models: [{ id: MODEL_ID }],
+          // temperature 0：0.5B 在采样下工具调用格式漂移严重，
+          // 探针实证 temp=0 时 JSON 语义稳定正确（见测试记录）。
+          models: [{ id: MODEL_ID, samplingParams: { temperature: 0 } }],
         },
       },
     },
@@ -224,6 +236,8 @@ test(
       }
       const att = { attempt, phases: {} };
       evidence.attempts.push(att);
+      // 证据收集器：模型原始助手文本（失败时定位卡点用，只留摘要）
+      let collectRaw = () => {};
       try {
         const { host, session, events, readPlan } = await openLocalSession(
           t,
@@ -232,6 +246,21 @@ test(
         );
         att.sessionId = session.id;
         const sid = session.id;
+        const hint = FORMAT_HINTS[attempt - 1] ?? "";
+        att.formatHint = hint;
+        collectRaw = () => {
+          att.rawAssistant = events
+            .filter((e) => e.type === "message_end" && e.message?.role === "assistant")
+            .map((e) =>
+              (e.message.content ?? [])
+                .filter((c) => c.type === "text")
+                .map((c) => c.text)
+                .join("")
+                .slice(0, 300),
+            )
+            .slice(0, 8);
+          att.allTools = toolNames(events);
+        };
 
         /* ---------- 阶段 A：计划批准后建文件 ---------- */
         checkpoints.createSnapshot(sid, workDir, {
@@ -241,7 +270,7 @@ test(
         const costA = waitCostRecorded(session);
         const a = await promptApprovePlan(
           session,
-          PROMPT_CREATE,
+          PROMPT_CREATE + hint,
           readPlan,
           1_200_000,
         );
@@ -289,7 +318,7 @@ test(
         const mark = events.length;
         const b = await promptApprovePlan(
           session,
-          PROMPT_MODIFY,
+          PROMPT_MODIFY + hint,
           readPlan,
           1_200_000,
         );
@@ -351,10 +380,12 @@ test(
             "已定价账目金额须按名义单价折算为正数",
           );
         }
+        collectRaw();
         passed = att;
       } catch (err) {
         att.error = err instanceof Error ? err.message : String(err);
         lastError = err;
+        collectRaw();
       }
     }
 
