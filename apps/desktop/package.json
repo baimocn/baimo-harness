@@ -1,8 +1,10 @@
 {
   "dependencies": {
     "@baimo-harness/agent-host": "*",
+    "@baimo-harness/core": "*",
     "@baimo-harness/ui": "*",
-    "@baimo-harness/core": "*"
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0"
   },
   "description": "白墨 Harness 桌面壳：Electron main（内嵌 agent-host）+ preload 白名单桥 + React 渲染层",
   "devDependencies": {

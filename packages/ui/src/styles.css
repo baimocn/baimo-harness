@@ -3,28 +3,51 @@
  * 组件规则只引用 token，不再出现裸色值（状态色与 diff 着色除外，集中在 token 层定义）。
  * 单一强调色随权限模式变色——模式即色彩（顶栏模式段 + .app-shell[data-mode]）。 */
 :root {
-  /* 颜色：深色专业质感，冷静、低饱和 */
-  --bg: #121419;
-  --panel: #171a20;
-  --panel-2: #1e222a;
+  /* 颜色 token（第八块校准）：命名与成对配方照 shadcn/ui dark 约定
+   * （background/foreground、card、popover、muted、destructive、border/input/ring），
+   * 取值交叉 Carbon g100（#161616/#262626）与 Primer dark（#0d1117/#161b22）校准；
+   * 全部文字/表面配对经 WCAG 对比度脚本核验 ≥4.5:1（见第八块测试记录）。
+   * 旧变量名保留为别名，组件规则逐步迁移到规范名。 */
+  --background: #101216;
+  --foreground: #e8eaee;
+  --card: #171a20;
+  --card-foreground: var(--foreground);
+  --popover: #1e222a;
+  --popover-foreground: var(--foreground);
+  --muted: #1e222a;
+  --muted-foreground: #a3abb9;
+  --destructive: #e06c75;
+  --destructive-foreground: #f6dfe1;
+  --border: #2b303a;
+  --input: #2b303a;
+  --ring: var(--accent);
+  /* 别名（既有规则在用） */
+  --bg: var(--background);
+  --panel: var(--card);
+  --panel-2: var(--popover);
   --panel-3: #262b35;
   --code-bg: #0c0e12;
-  --border: #2b303a;
   --border-strong: #3b414e;
-  --text: #e8eaee;
-  --dim: #a3abb9;
-  --faint: #6e7787;
+  --text: var(--foreground);
+  --dim: var(--muted-foreground);
+  --faint: #8a93a3;
   /* 状态色 */
   --ok: #6fbf73;
   --warn: #d9a13b;
-  --err: #e06c75;
+  --err: var(--destructive);
   --err-bg: rgba(224, 108, 117, 0.1);
-  /* 权限模式色（计划=蓝 / 编辑=黄 / 构建=绿 / YOLO=红，GUI-SPEC 关键交互 1） */
-  --mode-plan: #5b8def;
+  /* 权限模式色（计划=蓝 / 编辑=黄 / 构建=绿 / YOLO=红，GUI-SPEC 关键交互 1）。
+   * 成对配方：--mode-* 为填充面（配白字/深字 ≥4.5:1），--mode-*-fg 为深底上的文字/描边色。 */
+  --mode-plan: #4370c9;
+  --mode-plan-fg: #82a9f2;
   --mode-edit: #d9a13b;
-  --mode-build: #58a05c;
-  --mode-yolo: #d64545;
-  --accent: var(--mode-build);
+  --mode-edit-fg: #e3b356;
+  --mode-build: #3e7c43;
+  --mode-build-fg: #74c07a;
+  --mode-yolo: #c23e3e;
+  --mode-yolo-fg: #ef8383;
+  --accent: var(--mode-build-fg);
+  --accent-strong: var(--mode-build);
   /* diff 着色 */
   --diff-add-text: #8fd694;
   --diff-add-bg: rgba(88, 160, 92, 0.13);
@@ -47,19 +70,25 @@
   --r-md: 6px;
   --r-lg: 10px;
   --r-pill: 999px;
-  /* 字体 */
-  --font-ui: -apple-system, "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
-  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  /* 阴影与动效 */
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-pop: 0 10px 34px rgba(0, 0, 0, 0.5);
+  /* 字体：Inter 管 UI、JetBrains Mono 管代码/diff/数字（Fontsource 自托管，运行时零联网）；
+   * 中文回退系统黑体（Inter 不含 CJK 字形）。 */
+  --font-ui: "Inter Variable", "Inter", -apple-system, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  /* 阴影：只用 5 个 elevation 层级（Refactoring UI 硬规则），组件按需取级 */
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --elev-2: 0 2px 6px rgba(0, 0, 0, 0.3);
+  --elev-3: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --elev-4: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --elev-5: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --shadow-card: var(--elev-2);
+  --shadow-pop: var(--elev-5);
   --ease: 120ms ease;
 }
-/* 模式即色彩：强调色跟随当前权限模式 */
-.app-shell[data-mode="plan"] { --accent: var(--mode-plan); }
-.app-shell[data-mode="edit"] { --accent: var(--mode-edit); }
-.app-shell[data-mode="build"] { --accent: var(--mode-build); }
-.app-shell[data-mode="yolo"] { --accent: var(--mode-yolo); }
+/* 模式即色彩：强调色跟随当前权限模式（-fg 管文字/描边，-strong 管填充面） */
+.app-shell[data-mode="plan"] { --accent: var(--mode-plan-fg); --accent-strong: var(--mode-plan); }
+.app-shell[data-mode="edit"] { --accent: var(--mode-edit-fg); --accent-strong: var(--mode-edit); }
+.app-shell[data-mode="build"] { --accent: var(--mode-build-fg); --accent-strong: var(--mode-build); }
+.app-shell[data-mode="yolo"] { --accent: var(--mode-yolo-fg); --accent-strong: var(--mode-yolo); }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -192,7 +221,7 @@ input, textarea, select { font-family: inherit; }
 .checkpoint-row { display: flex; align-items: center; gap: var(--sp-2); padding: 5px 10px; border-top: 1px solid var(--border); }
 .checkpoint-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .stream { flex: 1; overflow-y: auto; padding: var(--sp-3); }
-.msg { max-width: 85%; padding: var(--sp-2) 11px; border-radius: var(--r-lg); margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+.msg { max-width: min(85%, 820px); padding: var(--sp-2) 11px; border-radius: var(--r-lg); margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
 .msg-user { background: #2a3242; margin-left: auto; }
 .msg-assistant { background: var(--panel-2); }
 .cursor { color: var(--accent); }
@@ -249,7 +278,7 @@ input, textarea, select { font-family: inherit; }
 .queue-withdrawn .queue-text { text-decoration: line-through; }
 .queue-kind-switch { display: flex; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
 .queue-kind-switch button { border: none; border-radius: 0; background: transparent; padding: 3px 7px; font-size: var(--fs-11); }
-.queue-kind-switch button.active { background: var(--accent); color: #fff; }
+.queue-kind-switch button.active { background: var(--accent-strong); color: #fff; }
 .cost-readout { color: var(--accent); font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
 .ledger-totals { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); }
 .ledger-section { padding: 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
