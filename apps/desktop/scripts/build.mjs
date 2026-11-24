@@ -45,6 +45,8 @@ await esbuild.build({
   format: "esm",
   target: "es2022",
   jsx: "automatic",
+  /* Fontsource 字体文件随包发出（本地文件，运行时不联网） */
+  loader: { ".woff2": "file", ".woff": "file" },
   outfile: join(dist, "renderer/main.js"),
   logLevel: "warning",
 });

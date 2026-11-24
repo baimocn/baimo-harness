@@ -4,6 +4,25 @@
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Circle,
+  LoaderCircle,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  Send,
+  ShieldAlert,
+  SkipBack,
+  SkipForward,
+  Square,
+  Undo2,
+  X,
+} from "lucide-react";
+import {
   PERMISSION_MODES,
   type ApprovalChoice,
   type ApprovalRequestDto,
@@ -160,8 +179,9 @@ export function SessionList(props: {
     <aside className="sidebar" data-testid="session-list">
       <div className="sidebar-head">
         <span>会话</span>
-        <button type="button" data-testid="new-session" onClick={props.onNew}>
-          + 新建会话
+        <button type="button" className="ic" data-testid="new-session" onClick={props.onNew}>
+          <Plus size={13} />
+          新建会话
         </button>
       </div>
       <div className="session-scroll">
@@ -189,12 +209,13 @@ export function SessionList(props: {
                   className="session-del"
                   data-testid="delete-session"
                   title="删除（进回收站）"
+                  aria-label="删除会话（进回收站）"
                   onClick={(e) => {
                     e.stopPropagation();
                     props.onDeleteRequest(s);
                   }}
                 >
-                  ×
+                  <X size={13} />
                 </button>
               </div>
             ))}
@@ -212,9 +233,11 @@ export function SessionList(props: {
             <span className="session-title">{s.title}</span>
             <button
               type="button"
+              className="ic"
               data-testid="restore-session"
               onClick={() => props.onRestore(s.id)}
             >
+              <Undo2 size={12} />
               还原
             </button>
           </div>
@@ -234,7 +257,13 @@ function ToolCard(props: {
   const [open, setOpen] = useState(false);
   const it = props.item;
   const statusIcon =
-    it.status === "running" ? "…" : it.status === "ok" ? "✓" : "✗";
+    it.status === "running" ? (
+      <LoaderCircle size={13} className="icon-spin" />
+    ) : it.status === "ok" ? (
+      <Check size={13} />
+    ) : (
+      <X size={13} />
+    );
   return (
     <div className="tool-card" data-testid="tool-card" data-tool={it.toolName}>
       <button
@@ -244,12 +273,14 @@ function ToolCard(props: {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <span className="tool-caret">{open ? "▾" : "▸"}</span>
+        <span className="tool-caret">
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
         <span className="tool-name">{it.toolName}</span>
         <span className="tool-target">{it.target}</span>
         <span className={`tool-status tool-${it.status}`}>
           {statusIcon}
-          {typeof it.durationMs === "number" ? ` ${it.durationMs}ms` : ""}
+          {typeof it.durationMs === "number" ? `${it.durationMs}ms` : ""}
         </span>
       </button>
       {open && (
@@ -283,17 +314,21 @@ function DiffCard(props: {
         <span className="dim">标记：{props.mark === "pending" ? "未处理" : props.mark === "accepted" ? "已接受" : "已回滚"}</span>
         <button
           type="button"
+          className="ic"
           data-testid="diff-accept"
           onClick={() => props.onMark("accepted")}
         >
+          <Check size={12} />
           接受
         </button>
         <button
           type="button"
+          className="ic"
           data-testid="diff-rollback"
           onClick={() => props.onMark("rolledback")}
           title="把该文件恢复到最近检查点的状态（真实回滚，M-06）"
         >
+          <Undo2 size={12} />
           回滚
         </button>
       </div>
@@ -335,7 +370,7 @@ export function StreamView(props: {
                 data-testid="msg-assistant"
               >
                 {it.text}
-                {it.streaming && <span className="cursor">▍</span>}
+                {it.streaming && <span className="cursor" />}
               </div>
             );
           case "tool": {
@@ -531,18 +566,22 @@ export function IdlePanel(props: {
                 <>
                   <button
                     type="button"
+                    className="ic"
                     data-testid="idle-move-up"
                     onClick={() => props.onMove(it.id, -1)}
                     title="在待执行序列里上移一位"
                   >
+                    <ChevronUp size={12} />
                     上移
                   </button>
                   <button
                     type="button"
+                    className="ic"
                     data-testid="idle-move-down"
                     onClick={() => props.onMove(it.id, 1)}
                     title="在待执行序列里下移一位"
                   >
+                    <ChevronDown size={12} />
                     下移
                   </button>
                 </>
@@ -832,6 +871,7 @@ export function ApprovalCard(props: {
   return (
     <div className="approval-card" data-testid="approval-card" data-tool={r.tool}>
       <div className="approval-head">
+        <ShieldAlert size={15} className="approval-icon" />
         <strong>需要审批：{r.tool}</strong>
         {r.danger && <span className="badge-danger">危险命令</span>}
         <span className="dim" data-testid="approval-reason">
@@ -906,7 +946,13 @@ function PlanStepsList(props: { plan: PlanStateDto }) {
           data-status={s.status}
         >
           <span className="plan-step-icon">
-            {s.status === "done" ? "✓" : s.status === "failed" ? "✗" : "○"}
+            {s.status === "done" ? (
+              <Check size={12} />
+            ) : s.status === "failed" ? (
+              <X size={12} />
+            ) : (
+              <Circle size={10} />
+            )}
           </span>
           <span className="plan-step-title">{s.title}</span>
           <span className="dim">{s.action}</span>
@@ -1129,10 +1175,12 @@ export function RightPanel(props: {
                 </div>
                 <button
                   type="button"
+                  className="ic"
                   data-testid="checkpoint-rollback"
                   onClick={() => props.onRollbackCheckpoint(c.id)}
                   title="把工作区恢复到这个检查点的状态（回滚前会自动再留一张快照）"
                 >
+                  <RotateCcw size={12} />
                   回滚
                 </button>
               </div>
@@ -1246,26 +1294,32 @@ export function ReplayBar(props: {
       <span className="replay-title">回放（只读）</span>
       <button
         type="button"
+        className="ic"
         data-testid="replay-toggle"
         onClick={props.onTogglePlay}
         disabled={props.total === 0}
       >
+        {props.playing ? <Pause size={12} /> : <Play size={12} />}
         {props.playing ? "暂停" : "播放"}
       </button>
       <button
         type="button"
+        className="ic"
         data-testid="replay-step-back"
         onClick={props.onStepBack}
         disabled={props.index <= 0}
       >
+        <SkipBack size={12} />
         上一步
       </button>
       <button
         type="button"
+        className="ic"
         data-testid="replay-step-forward"
         onClick={props.onStepForward}
         disabled={props.index >= props.total}
       >
+        <SkipForward size={12} />
         下一步
       </button>
       <input
@@ -1461,20 +1515,23 @@ export function Composer(props: {
             )}
             <button
               type="button"
+              className="ic btn-primary"
               data-testid="composer-send"
               disabled={!props.canSend || text.trim() === ""}
               onClick={send}
             >
+              <Send size={12} />
               {props.running ? "入队" : "发送"}
             </button>
             {props.running && (
               <button
                 type="button"
                 data-testid="composer-stop"
-                className="btn-stop"
+                className="ic btn-stop"
                 onClick={props.onStop}
                 title="停止当前运行（RPC abort）：运行以「已停止」收尾，不记完成"
               >
+                <Square size={11} />
                 停止
               </button>
             )}
