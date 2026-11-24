@@ -251,6 +251,81 @@ test("A12 解析器：required 缺失 / 类型不符 → 均不转换", () => {
   assert.equal(r2.remainingText, wrongType);
 });
 
+test("A13 解析器：多个裸 JSON 对象首尾相接（3B 验收实证形态）→ 逐个转、顺序对", () => {
+  // 2026-11-24 3B 真跑原始输出：计划获批后 plan_progress 与 write 以
+  // 每行一个裸对象、无围栏的形式连发——旧「全文单对象」口径转不了。
+  const text =
+    '{"name": "plan_progress", "arguments": {"stepIndex": 0, "status": "done"}}\n' +
+    '{"name": "write", "arguments": {"path": "greeting.txt", "content": "hello baimo\\nversion: 1\\nstatus: draft\\n"}}';
+  const r = parseLenientToolCalls(text, PARSER_TOOLS);
+  assert.equal(r.convertedCount, 2);
+  assert.equal(r.calls[0].name, "plan_progress");
+  assert.equal(r.calls[1].name, "write");
+  assert.equal(r.calls[1].arguments.content, "hello baimo\nversion: 1\nstatus: draft\n");
+  assert.equal(r.remainingText, "");
+});
+
+test("A14 解析器：首尾相接裸对象中一个未知工具 → 只转已知的，未知对象原文保留", () => {
+  const unknown = '{"name": "teleport", "arguments": {"to": "mars"}}';
+  const text =
+    '{"name": "bash", "arguments": {"command": "echo hi"}}\n' + unknown;
+  const r = parseLenientToolCalls(text, PARSER_TOOLS);
+  assert.equal(r.convertedCount, 1);
+  assert.equal(r.calls[0].name, "bash");
+  assert.equal(r.remainingText, unknown);
+});
+
+test("A15 解析器：裸对象之间夹说明文字 → 不转换（确定性口径不变）", () => {
+  const text =
+    '{"name": "bash", "arguments": {"command": "echo hi"}}\n' +
+    "接下来写文件：\n" +
+    '{"name": "write", "arguments": {"path": "a.txt", "content": "x"}}';
+  const r = parseLenientToolCalls(text, PARSER_TOOLS);
+  assert.equal(r.convertedCount, 0);
+  assert.equal(r.remainingText, text);
+});
+
+test("A16 解析器：顶层 JSON 数组 → 全部可转才转；含未知工具则全不转", () => {
+  const good = JSON.stringify([
+    { name: "bash", arguments: { command: "echo hi" } },
+    { name: "write", arguments: { path: "a.txt", content: "x" } },
+  ]);
+  const r1 = parseLenientToolCalls(good, PARSER_TOOLS);
+  assert.equal(r1.convertedCount, 2);
+  assert.equal(r1.remainingText, "");
+  const bad = JSON.stringify([
+    { name: "bash", arguments: { command: "echo hi" } },
+    { name: "teleport", arguments: { to: "mars" } },
+  ]);
+  const r2 = parseLenientToolCalls(bad, PARSER_TOOLS);
+  assert.equal(r2.convertedCount, 0);
+  assert.equal(r2.remainingText, bad);
+});
+
+test("A17 解析器：围栏块内首尾相接两个对象 → 整段转两个调用", () => {
+  const text =
+    "```json\n" +
+    '{"name": "bash", "arguments": {"command": "echo one"}}\n' +
+    '{"name": "bash", "arguments": {"command": "echo two"}}\n' +
+    "```";
+  const r = parseLenientToolCalls(text, PARSER_TOOLS);
+  assert.equal(r.convertedCount, 2);
+  assert.equal(r.calls[0].arguments.command, "echo one");
+  assert.equal(r.calls[1].arguments.command, "echo two");
+  assert.equal(r.remainingText, "");
+});
+
+test("A18 解析器：字符串值内含大括号/转义 → 平衡扫描不被骗、内容逐字保真", () => {
+  const content = 'if (a) { b("}"); }\nprint("{x}")\n';
+  const text = JSON.stringify({
+    name: "write",
+    arguments: { path: "code.txt", content },
+  });
+  const r = parseLenientToolCalls(text, PARSER_TOOLS);
+  assert.equal(r.convertedCount, 1);
+  assert.equal(r.calls[0].arguments.content, content);
+});
+
 /* ================= B. 代理直测 ================= */
 
 /** 发给代理的 tools（OpenAI 形态）：代理从中提取工具清单与 schema 做解析。 */

@@ -8,6 +8,12 @@
  * 原则：只转「确信是调用」的段——工具名必须在清单内、参数必须过模式回声
  * 清洗与 schema 基本校验；任何一步拿不准就整段原样保留为文本，绝不猜、
  * 绝不静默改写。无任何转换时 remainingText 与输入逐字一致。
+ *
+ * 第九块验收实证补充（2026-11-24，3B 真跑）：模型在计划获批后会把后续
+ * 多个调用写成「首尾相接的裸 JSON 对象」（每行一个、无围栏），故裸 JSON
+ * 识别从「全文单对象」扩展为「全文仅由顶层 JSON 对象（可多个）或对象
+ * 数组构成、对象外只有空白」——确定性口径不变：只要混入任何说明文字，
+ * 裸对象一律不转（围栏块因有定界符不受此限）。
  */
 
 /** 工具清单条目：name 精确匹配；parameters 为该工具的 JSON Schema（可缺省）。 */
@@ -230,6 +236,100 @@ function evaluateCandidate(
   return { name, arguments: cleaned };
 }
 
+/**
+ * 扫描全文的顶层 JSON 对象跨度：要求全文除空白外只由一个个平衡的
+ * {...} 对象首尾相接构成（字符串与转义感知，字符串内的大括号不计数）。
+ * 满足时返回各对象在原文中的 [start, end) 跨度；混入任何非空白非对象
+ * 内容、括号不平衡或一个对象都没有时返回 null。
+ */
+function scanTopLevelObjectSpans(
+  text: string,
+): Array<{ start: number; end: number }> | null {
+  const spans: Array<{ start: number; end: number }> = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      i += 1;
+      continue;
+    }
+    if (ch !== "{") return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let j = i;
+    for (; j < n; j += 1) {
+      const c = text[j];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === "{") depth += 1;
+      else if (c === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          j += 1;
+          break;
+        }
+      }
+    }
+    if (depth !== 0) return null;
+    spans.push({ start: i, end: j });
+    i = j;
+  }
+  return spans.length > 0 ? spans : null;
+}
+
+/**
+ * 从一段 JSON 文本中提取全部候选调用：单个对象、对象数组、或首尾
+ * 相接的多个对象。整段全有或全无——任一候选不可转则返回 null
+ * （供围栏块 / <tool_call> 段使用，段内不做部分转换）。
+ */
+function evaluateJsonText(
+  jsonText: string,
+  toolsByName: ReadonlyMap<string, LenientToolDef>,
+): LenientConvertedCall[] | null {
+  const t = jsonText.trim();
+  let parsed: unknown;
+  let parseOk = true;
+  try {
+    parsed = JSON.parse(t);
+  } catch {
+    parseOk = false;
+  }
+  if (parseOk) {
+    if (isPlainObject(parsed)) {
+      const call = evaluateCandidate(t, toolsByName);
+      return call !== null ? [call] : null;
+    }
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) return null;
+      const out: LenientConvertedCall[] = [];
+      for (const el of parsed) {
+        if (!isPlainObject(el)) return null;
+        const call = evaluateCandidate(JSON.stringify(el), toolsByName);
+        if (call === null) return null;
+        out.push(call);
+      }
+      return out;
+    }
+    return null;
+  }
+  const spans = scanTopLevelObjectSpans(t);
+  if (spans === null) return null;
+  const out: LenientConvertedCall[] = [];
+  for (const span of spans) {
+    const call = evaluateCandidate(t.slice(span.start, span.end), toolsByName);
+    if (call === null) return null;
+    out.push(call);
+  }
+  return out.length > 0 ? out : null;
+}
+
 /** 从围栏块的完整匹配里取出内部文本。 */
 function fenceInner(fullMatch: string): string {
   const withoutOpen = fullMatch.replace(/^```(?:json)?[ \t]*\r?\n?/, "");
@@ -253,12 +353,32 @@ function toolCallInner(fullMatch: string): string {
 const SEGMENT_RE =
   /```(?:json)?[ \t]*\r?\n?[\s\S]*?```|<tool_call>[\s\S]*?<\/tool_call>/g;
 
+/** 由已转跨度拼解析结果：移除已转段落，折叠多余空行并 trim。 */
+function buildResult(
+  text: string,
+  calls: LenientConvertedCall[],
+  convertedSpans: Array<{ start: number; end: number }>,
+): LenientParseResult {
+  let remaining = "";
+  let cursor = 0;
+  for (const span of convertedSpans) {
+    remaining += text.slice(cursor, span.start);
+    cursor = span.end;
+  }
+  remaining += text.slice(cursor);
+  remaining = remaining.replace(/\n{3,}/g, "\n\n").trim();
+  return { calls, remainingText: remaining, convertedCount: calls.length };
+}
+
 /**
  * 把文本里的宽容工具调用转换成结构化调用。
  *
- * 候选段三类：围栏块、<tool_call> 段、裸 JSON（仅当全文 trim 后整体是
- * 一个 JSON 对象时才判定，带前后说明文字的裸 JSON 确定性不足、不转）。
- * 多个候选逐个独立判定：可转的转，不可转的段原样留在文本里。
+ * 候选段三类：围栏块、<tool_call> 段、裸 JSON。裸 JSON 的确定性口径：
+ * 全文仅由顶层 JSON 对象（可多个首尾相接）或一个对象数组构成、对象
+ * 外只有空白时才逐个判定；混入任何说明文字则裸对象一律不转（围栏块
+ * 有定界符，不受此限）。围栏 / <tool_call> 段内可含单个对象、对象
+ * 数组或首尾相接多对象，整段全有或全无；段与段之间、裸对象之间逐个
+ * 独立判定：可转的转，不可转的原样留在文本里。
  */
 export function parseLenientToolCalls(
   text: string,
@@ -276,25 +396,48 @@ export function parseLenientToolCalls(
     if (!toolsByName.has(tool.name)) toolsByName.set(tool.name, tool);
   }
 
-  // 裸 JSON：全文 trim 后整体是一个 JSON 对象时，它是唯一的候选。
   const trimmed = text.trim();
-  if (trimmed.startsWith("{")) {
-    let whole: unknown = undefined;
-    let wholeParsed = false;
+
+  // 裸 JSON（数组形态）：全文是一个 JSON 数组时整段判定，全有或全无。
+  if (trimmed.startsWith("[")) {
+    let parsed: unknown;
+    let parseOk = true;
     try {
-      whole = JSON.parse(trimmed);
-      wholeParsed = true;
+      parsed = JSON.parse(trimmed);
     } catch {
-      wholeParsed = false;
+      parseOk = false;
     }
-    if (wholeParsed && isPlainObject(whole)) {
-      const call = evaluateCandidate(trimmed, toolsByName);
-      if (call === null) return noConversion;
-      return { calls: [call], remainingText: "", convertedCount: 1 };
+    if (parseOk) {
+      if (!Array.isArray(parsed)) return noConversion;
+      const calls = evaluateJsonText(trimmed, toolsByName);
+      if (calls === null) return noConversion;
+      return { calls, remainingText: "", convertedCount: calls.length };
     }
+    // 解析失败则继续走围栏段扫描（畸形数组里也许另有围栏块）。
   }
 
-  // 围栏块 / <tool_call> 段逐个独立判定。
+  // 裸 JSON（对象形态）：全文仅由顶层对象首尾相接构成时逐个判定。
+  // 命中此形态即为纯 JSON 文本：一个都转不了也直接返回不转，
+  // 不再往对象内部扫围栏段（避免字符串值里的 ``` 被误扫）。
+  const objectSpans = scanTopLevelObjectSpans(text);
+  if (objectSpans !== null) {
+    const calls: LenientConvertedCall[] = [];
+    const convertedSpans: Array<{ start: number; end: number }> = [];
+    for (const span of objectSpans) {
+      const call = evaluateCandidate(
+        text.slice(span.start, span.end),
+        toolsByName,
+      );
+      if (call !== null) {
+        calls.push(call);
+        convertedSpans.push(span);
+      }
+    }
+    if (calls.length === 0) return noConversion;
+    return buildResult(text, calls, convertedSpans);
+  }
+
+  // 围栏块 / <tool_call> 段逐个独立判定（段内全有或全无）。
   const calls: LenientConvertedCall[] = [];
   const convertedSpans: Array<{ start: number; end: number }> = [];
   SEGMENT_RE.lastIndex = 0;
@@ -302,23 +445,13 @@ export function parseLenientToolCalls(
   while ((match = SEGMENT_RE.exec(text)) !== null) {
     const full = match[0];
     const inner = full.startsWith("```") ? fenceInner(full) : toolCallInner(full);
-    const call = evaluateCandidate(inner, toolsByName);
-    if (call !== null) {
-      calls.push(call);
+    const segmentCalls = evaluateJsonText(inner, toolsByName);
+    if (segmentCalls !== null) {
+      calls.push(...segmentCalls);
       convertedSpans.push({ start: match.index, end: match.index + full.length });
     }
   }
   if (calls.length === 0) return noConversion;
 
-  // remainingText：移除已转段落，折叠多余空行并 trim。
-  let remaining = "";
-  let cursor = 0;
-  for (const span of convertedSpans) {
-    remaining += text.slice(cursor, span.start);
-    cursor = span.end;
-  }
-  remaining += text.slice(cursor);
-  remaining = remaining.replace(/\n{3,}/g, "\n\n").trim();
-
-  return { calls, remainingText: remaining, convertedCount: calls.length };
+  return buildResult(text, calls, convertedSpans);
 }
