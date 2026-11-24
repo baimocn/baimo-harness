@@ -1345,7 +1345,9 @@ async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
-    backgroundColor: "#14161a",
+    title: "白墨 Harness",
+    icon: join(here, "icon.png"),
+    backgroundColor: "#101216",
     webPreferences: {
       preload: join(here, "preload.cjs"),
       contextIsolation: true,

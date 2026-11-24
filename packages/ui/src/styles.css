@@ -177,6 +177,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--border-strong); 
   padding: 6px var(--sp-3); background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 10px; }
+.brand-wrap { display: inline-flex; align-items: center; gap: 7px; }
+.brand-mark { color: var(--text); flex-shrink: 0; }
 .brand { font-weight: 700; font-size: var(--fs-14); letter-spacing: 0.02em; }
 .ws-chip {
   display: inline-flex; align-items: center; gap: 5px;

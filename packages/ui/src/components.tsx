@@ -112,7 +112,27 @@ export function TopBar(props: {
   return (
     <header className="topbar" data-testid="topbar">
       <div className="topbar-left">
-        <span className="brand">白墨 Harness</span>
+        <span className="brand-wrap">
+          <svg
+            className="brand-mark"
+            width="17"
+            height="17"
+            viewBox="0 0 24 24"
+            aria-hidden
+          >
+            <g
+              stroke="currentColor"
+              strokeWidth="2.6"
+              strokeLinecap="round"
+            >
+              <line x1="3.5" y1="5.5" x2="20.5" y2="5.5" />
+              <line x1="3.5" y1="12" x2="14.5" y2="12" />
+              <line x1="3.5" y1="18.5" x2="20.5" y2="18.5" />
+            </g>
+            <circle cx="18.4" cy="12" r="1.9" fill="var(--accent)" stroke="none" />
+          </svg>
+          <span className="brand">白墨 Harness</span>
+        </span>
         <span className="ws-chip" title={`工作区：${snapshot.workspaceDir}`}>
           <Folder size={12} />
           {wsName}

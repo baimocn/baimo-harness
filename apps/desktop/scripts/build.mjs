@@ -55,4 +55,6 @@ copyFileSync(
   join(appDir, "src/renderer/index.html"),
   join(dist, "renderer/index.html"),
 );
+/* 应用图标（scripts/make-icon.mjs 生成）随包发出，main 以 icon.png 引用 */
+copyFileSync(join(appDir, "assets/icon.png"), join(dist, "icon.png"));
 console.log("desktop build ok:", dist);
