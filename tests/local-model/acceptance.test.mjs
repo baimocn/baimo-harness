@@ -1,8 +1,10 @@
 /*** 第七块：本地真模型接入验收（env 门控，不进默认回归） *****
  * 运行：BAIMO_LOCAL_MODEL=1 node --test tests/local-model/acceptance.test.mjs
  * 前置：本机回环推理端点已在运行（默认 Ollama http://localhost:11434/v1，
- * 模型 qwen2.5-coder:0.5b，用户拍板的 0.5B 尺寸；可经
- * BAIMO_LOCAL_MODEL_URL / BAIMO_LOCAL_MODEL_ID 覆盖）。
+ * 模型 qwen2.5-coder:3b；可经 BAIMO_LOCAL_MODEL_URL / BAIMO_LOCAL_MODEL_ID
+ * 覆盖）。选型沿革：首轮用 qwen2.5-coder:0.5b（用户拍板的 0.5B 尺寸）
+ * 三次尝试均卡在工具调用格式、未通过；用户 2026-11-24 改拍 3B 重跑本验收，
+ * 故默认模型切至 3B（见 docs/test-runs/2026-11-24-local-model-3b.md）。
  * 未设 BAIMO_LOCAL_MODEL=1 时整套跳过——默认回归不依赖模型下载状态。
  *
  * 验收链路（全程 harness 真实链路，无桩、无人工代答）：
@@ -38,7 +40,7 @@ import { CheckpointStore } from "../../packages/core/dist/index.js";
 const ENABLED = process.env.BAIMO_LOCAL_MODEL === "1";
 const BASE_URL =
   process.env.BAIMO_LOCAL_MODEL_URL ?? "http://localhost:11434/v1";
-const MODEL_ID = process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:0.5b";
+const MODEL_ID = process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:3b";
 const MODEL_KEY = `ollama/${MODEL_ID}`;
 /** 名义测试单价（美元/1M tokens）：只为验证金额折算，本地推理无此账单。 */
 const TEST_PRICE = { input: 150, output: 200, cacheRead: 15, cacheWrite: 150 };
@@ -268,6 +270,11 @@ test(
           trigger: "run_start",
         });
         const costA = waitCostRecorded(session);
+        // 先挂 no-op catch：慢模型（如 3B）首轮 prompt 在飞超过 60s 时，
+        // 该 promise 的超时拒绝若无人处理会直接崩溃测试进程
+        // （2026-11-24 3B 首跑即栽于此，证据只剩裸 attempt）；
+        // 后续 await costA.catch(...) 仍能观察到拒绝并记 costError。
+        costA.catch(() => {});
         const a = await promptApprovePlan(
           session,
           PROMPT_CREATE + hint,
@@ -315,6 +322,7 @@ test(
           trigger: "run_start",
         });
         const costB = waitCostRecorded(session);
+        costB.catch(() => {}); // 同阶段 A：防未处理拒绝崩溃
         const mark = events.length;
         const b = await promptApprovePlan(
           session,
