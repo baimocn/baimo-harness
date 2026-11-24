@@ -22,6 +22,7 @@ import {
   Plus,
   Puzzle,
   RotateCcw,
+  Search,
   Send,
   ShieldAlert,
   ShieldCheck,
@@ -230,14 +231,21 @@ export function SessionList(props: {
   onDeleteRequest: (s: SessionMetaDto) => void;
   onRestore: (id: string) => void;
 }) {
+  /* 搜索只做本地呈现过滤（标题子串），不触碰会话数据与宿主。 */
+  const [query, setQuery] = useState("");
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return props.sessions;
+    return props.sessions.filter((s) => s.title.toLowerCase().includes(q));
+  }, [props.sessions, query]);
   const groups = useMemo(() => {
     const map = new Map<string, SessionMetaDto[]>();
-    for (const s of props.sessions) {
+    for (const s of visible) {
       const g = dayGroup(s.createdAt);
       map.set(g, [...(map.get(g) ?? []), s]);
     }
     return [...map.entries()];
-  }, [props.sessions]);
+  }, [visible]);
   return (
     <aside className="sidebar" data-testid="session-list">
       <div className="sidebar-head">
@@ -247,6 +255,17 @@ export function SessionList(props: {
           新建会话
         </button>
       </div>
+      <div className="sidebar-search">
+        <Search size={13} />
+        <input
+          type="text"
+          data-testid="session-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索会话"
+          aria-label="搜索会话（按标题过滤）"
+        />
+      </div>
       <div className="session-scroll">
         {props.sessions.length === 0 && (
           <EmptyState
@@ -254,6 +273,9 @@ export function SessionList(props: {
             title="暂无会话"
             hint="点右上角「新建会话」，开始第一轮任务。"
           />
+        )}
+        {props.sessions.length > 0 && visible.length === 0 && (
+          <p className="search-none dim">没有标题包含「{query.trim()}」的会话。</p>
         )}
         {groups.map(([group, list]) => (
           <div key={group}>
