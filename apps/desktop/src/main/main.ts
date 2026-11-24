@@ -134,7 +134,7 @@ const stubMode = stubUrl !== null;
  * 与桩模式并列，靠 env 切换；端点只许回环，推理不出本机。 */
 const localModelUrl = process.env.BAIMO_LOCAL_MODEL_URL ?? null;
 const localModelId =
-  process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:3b";
+  process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:0.5b";
 const LOCAL_REF = { provider: "ollama", modelId: localModelId };
 const localMode = localModelUrl !== null;
 

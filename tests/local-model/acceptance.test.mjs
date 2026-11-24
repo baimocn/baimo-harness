@@ -1,8 +1,9 @@
 /*** 第七块：本地真模型接入验收（env 门控，不进默认回归） *****
  * 运行：BAIMO_LOCAL_MODEL=1 node --test tests/local-model/acceptance.test.mjs
  * 前置：本机回环推理端点已在运行（默认 Ollama http://localhost:11434/v1，
- * 模型 qwen2.5-coder:3b；可经 BAIMO_LOCAL_MODEL_URL / BAIMO_LOCAL_MODEL_ID
- * 覆盖）。未设 BAIMO_LOCAL_MODEL=1 时整套跳过——默认回归不依赖模型下载状态。
+ * 模型 qwen2.5-coder:0.5b，用户拍板的 0.5B 尺寸；可经
+ * BAIMO_LOCAL_MODEL_URL / BAIMO_LOCAL_MODEL_ID 覆盖）。
+ * 未设 BAIMO_LOCAL_MODEL=1 时整套跳过——默认回归不依赖模型下载状态。
  *
  * 验收链路（全程 harness 真实链路，无桩、无人工代答）：
  * 1) 计划模式（required）下发建文件任务：模型必须先 submit_plan，
@@ -37,7 +38,7 @@ import { CheckpointStore } from "../../packages/core/dist/index.js";
 const ENABLED = process.env.BAIMO_LOCAL_MODEL === "1";
 const BASE_URL =
   process.env.BAIMO_LOCAL_MODEL_URL ?? "http://localhost:11434/v1";
-const MODEL_ID = process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:3b";
+const MODEL_ID = process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:0.5b";
 const MODEL_KEY = `ollama/${MODEL_ID}`;
 /** 名义测试单价（美元/1M tokens）：只为验证金额折算，本地推理无此账单。 */
 const TEST_PRICE = { input: 150, output: 200, cacheRead: 15, cacheWrite: 150 };
