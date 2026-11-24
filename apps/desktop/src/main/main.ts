@@ -130,11 +130,12 @@ const stubUrl = process.env.BAIMO_STUB_MODEL_URL ?? null;
 const piHome = process.env.BAIMO_PI_HOME ?? null;
 const stubMode = stubUrl !== null;
 /** 本地真模型模式（第七块）：env 指向本机回环推理端点（如 Ollama
- * http://localhost:11434/v1），模型 id 可经 BAIMO_LOCAL_MODEL_ID 覆盖。
+ * http://localhost:11434/v1），模型 id 可经 BAIMO_LOCAL_MODEL_ID 覆盖
+ * （默认 qwen2.5-coder:3b；0.5B 仍可经该 env 指定）。
  * 与桩模式并列，靠 env 切换；端点只许回环，推理不出本机。 */
 const localModelUrl = process.env.BAIMO_LOCAL_MODEL_URL ?? null;
 const localModelId =
-  process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:0.5b";
+  process.env.BAIMO_LOCAL_MODEL_ID ?? "qwen2.5-coder:3b";
 const LOCAL_REF = { provider: "ollama", modelId: localModelId };
 const localMode = localModelUrl !== null;
 
@@ -206,6 +207,8 @@ const host = new AgentHost({
   dataDir,
   workspaceDir,
   env: piHome ? { HOME: piHome } : {},
+  // 宽容代理仅本地真模型模式开启：小模型把工具调用写成 JSON 文本，靠宿主代理宽容解析转成真调用；转换后的调用仍走 Pi 内审批门/计划门同一通路。
+  lenientProxy: localMode,
 });
 
 /** 检查点存储（M-06）：快照落在数据目录，不污染用户工作区。 */

@@ -11,14 +11,20 @@
  */
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AbnormalTerminationError,
   AgentHostError,
   BudgetExceededError,
+  ConfigError,
   RpcTimeoutError,
 } from "./errors.js";
+import {
+  startLenientToolCallProxy,
+  type LenientProxyHandle,
+} from "./lenient-proxy.js";
 import {
   CostLedger,
   computeCost,
@@ -60,6 +66,55 @@ function extractMessageText(content: unknown): string {
       .join("");
   }
   return "";
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** 回环主机名判定：URL.hostname 对 IPv6 会带方括号（如 [::1]），一并兼容裸 ::1。 */
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
+}
+
+/** 宽容代理改写记录（供 UI/测试观测，不许静默改写）。 */
+export interface LenientProxyRoute {
+  provider: string;
+  upstreamBaseUrl: string;
+  proxyBaseUrl: string;
+}
+
+/** lenient-proxy.json sidecar 结构（version:1）：崩溃自愈所需的原文与改写记录。 */
+interface LenientProxySidecar {
+  version: 1;
+  originalModelsJson: string;
+  routes: LenientProxyRoute[];
+}
+
+/** 读并严格校验 sidecar：坏 JSON / 结构不对 → ConfigError（不许静默忽略残留）。 */
+function readLenientProxySidecar(sidecarPath: string): LenientProxySidecar {
+  const raw = readFileSync(sidecarPath, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ConfigError(`宽容代理 sidecar 不是合法 JSON（来源: ${sidecarPath}），拒绝启动`, {
+      source: sidecarPath,
+    });
+  }
+  if (
+    !isPlainObject(parsed) ||
+    parsed.version !== 1 ||
+    typeof parsed.originalModelsJson !== "string" ||
+    !Array.isArray(parsed.routes)
+  ) {
+    throw new ConfigError(`宽容代理 sidecar 顶层结构不对（来源: ${sidecarPath}），拒绝启动`, {
+      source: sidecarPath,
+      value: parsed,
+    });
+  }
+  return parsed as unknown as LenientProxySidecar;
 }
 
 /** 随附 Pi 的默认 CLI 路径（apps/agent-host/{src,dist} 上溯三级即项目根）。 */
@@ -828,6 +883,15 @@ export class AgentHost extends EventEmitter {
   readonly plugins: PluginService;
   private readonly sessions = new Map<string, SessionHandle>();
   private started = false;
+  /** 本宿主已启动的宽容代理句柄（按上游去重后的一份一个）。 */
+  private lenientProxies: LenientProxyHandle[] = [];
+  /** 本宿主对 models.json 的改写记录（未开启或无可代理 provider 时为空）。 */
+  private lenientRoutes: LenientProxyRoute[] = [];
+
+  /** 宽容代理改写结果（供 UI/测试观测改写结果，不许静默改写）。 */
+  get lenientProxyRoutes(): ReadonlyArray<LenientProxyRoute> {
+    return this.lenientRoutes;
+  }
 
   constructor(config: HostConfig) {
     super();
@@ -844,8 +908,147 @@ export class AgentHost extends EventEmitter {
   async start(): Promise<void> {
     if (this.started) return;
     preparePiAgentDir(this.config.piAgentDir);
+    // 宽容代理只在首次真正启动时 setup 一次（本方法已有 started 守卫）。
+    if (this.config.lenientProxy) {
+      await this.setupLenientProxies();
+    }
     this.store.init();
     this.started = true;
+  }
+
+  private lenientSidecarPath(): string {
+    return join(this.config.piAgentDir, "lenient-proxy.json");
+  }
+
+  private lenientModelsPath(): string {
+    return join(this.config.piAgentDir, "models.json");
+  }
+
+  /**
+   * 宽容代理接线（第九块）：为 models.json 中回环 openai-completions
+   * provider 启动代理并改写 baseUrl 指向代理；改写前把原文与改写记录
+   * 写进 sidecar，close 时据此还原，崩溃残留由下次 start 先自愈还原。
+   */
+  private async setupLenientProxies(): Promise<void> {
+    const sidecarPath = this.lenientSidecarPath();
+    const modelsPath = this.lenientModelsPath();
+
+    // 1) 崩溃自愈：上次宿主没来得及还原就退出时 sidecar 会残留——
+    // 先把 models.json 还原为 sidecar 保存的原文、删 sidecar，再按全新流程走。
+    if (existsSync(sidecarPath)) {
+      const stale = readLenientProxySidecar(sidecarPath);
+      writeFileSync(modelsPath, stale.originalModelsJson, "utf8");
+      rmSync(sidecarPath, { force: true });
+    }
+
+    // 2) 读 models.json：不存在则无可代理，无事发生。
+    if (!existsSync(modelsPath)) return;
+    const originalModelsJson = readFileSync(modelsPath, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(originalModelsJson);
+    } catch {
+      throw new ConfigError(`Pi models.json 不是合法 JSON（来源: ${modelsPath}），拒绝启动`, {
+        source: modelsPath,
+      });
+    }
+    if (!isPlainObject(parsed)) {
+      throw new ConfigError(`Pi models.json 顶层结构不对：必须是 JSON 对象（来源: ${modelsPath}）`, {
+        source: modelsPath,
+        value: parsed,
+      });
+    }
+    if (parsed.providers !== undefined && !isPlainObject(parsed.providers)) {
+      throw new ConfigError(`Pi models.json 顶层结构不对：providers 必须是对象（来源: ${modelsPath}）`, {
+        source: modelsPath,
+        value: parsed.providers,
+      });
+    }
+    const providers = isPlainObject(parsed.providers) ? parsed.providers : {};
+
+    // 3) 遍历 providers：仅回环 openai-completions 按上游去重启动代理并改写。
+    const startedProxies: LenientProxyHandle[] = [];
+    const proxyByUpstream = new Map<string, LenientProxyHandle>();
+    const routes: LenientProxyRoute[] = [];
+    try {
+      for (const [providerName, providerValue] of Object.entries(providers)) {
+        if (!isPlainObject(providerValue)) {
+          throw new ConfigError(
+            `Pi models.json 顶层结构不对：providers.${providerName} 必须是对象（来源: ${modelsPath}）`,
+            { source: modelsPath, field: `providers.${providerName}`, value: providerValue },
+          );
+        }
+        if (providerValue.api !== "openai-completions") continue;
+        if (typeof providerValue.baseUrl !== "string" || providerValue.baseUrl.length === 0) continue;
+        const upstreamBaseUrl = providerValue.baseUrl;
+        let upstream: URL;
+        try {
+          upstream = new URL(upstreamBaseUrl);
+        } catch {
+          throw new ConfigError(
+            `Pi models.json 中 provider ${providerName} 的 baseUrl 不是合法 URL: ${upstreamBaseUrl}（来源: ${modelsPath}）`,
+            { source: modelsPath, field: `providers.${providerName}.baseUrl`, value: upstreamBaseUrl },
+          );
+        }
+        if (!isLoopbackHostname(upstream.hostname)) continue;
+        let handle = proxyByUpstream.get(upstreamBaseUrl);
+        if (!handle) {
+          handle = await startLenientToolCallProxy({ upstreamBaseUrl });
+          proxyByUpstream.set(upstreamBaseUrl, handle);
+          startedProxies.push(handle);
+        }
+        providerValue.baseUrl = handle.baseUrl;
+        routes.push({ provider: providerName, upstreamBaseUrl, proxyBaseUrl: handle.baseUrl });
+      }
+    } catch (err) {
+      // 5) 中途失败：已启动的代理全部关掉再抛错，不留半成品。
+      await Promise.all(startedProxies.map((p) => p.close().catch(() => undefined)));
+      throw err;
+    }
+
+    // 4) 一个都没改写则不写 sidecar、不动文件。
+    if (routes.length === 0) return;
+
+    try {
+      const sidecar: LenientProxySidecar = { version: 1, originalModelsJson, routes };
+      writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2) + "\n", "utf8");
+      writeFileSync(modelsPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+    } catch (err) {
+      // 写盘失败同样不留半成品：关掉已启动的代理再抛错；
+      // 若 sidecar 已写成，它保存着原文，下次 start 会先自愈还原。
+      await Promise.all(startedProxies.map((p) => p.close().catch(() => undefined)));
+      throw err;
+    }
+    this.lenientProxies = startedProxies;
+    this.lenientRoutes = routes;
+  }
+
+  /**
+   * 宽容代理拆线：把 models.json 还原为 sidecar 保存的原文、删 sidecar、
+   * 关闭全部代理。还原失败不吞：保留 sidecar 以便下次 start 自愈，
+   * 代理仍会关闭，随后把还原错误向上抛（见 close 的 finally 调用）。
+   */
+  private async teardownLenientProxies(): Promise<void> {
+    if (this.lenientProxies.length === 0) return;
+    const proxies = this.lenientProxies;
+    const sidecarPath = this.lenientSidecarPath();
+    const modelsPath = this.lenientModelsPath();
+    this.lenientProxies = [];
+    this.lenientRoutes = [];
+    let restoreError: unknown = null;
+    try {
+      if (existsSync(sidecarPath)) {
+        const sidecar = readLenientProxySidecar(sidecarPath);
+        writeFileSync(modelsPath, sidecar.originalModelsJson, "utf8");
+        rmSync(sidecarPath, { force: true });
+      }
+    } catch (err) {
+      // 还原失败：不删 sidecar（上面的 rmSync 只在写回成功后执行），
+      // 留待下次 start 的自愈流程处理；错误在代理关闭后向上抛，不静默。
+      restoreError = err;
+    }
+    await Promise.all(proxies.map((p) => p.close().catch(() => undefined)));
+    if (restoreError !== null) throw restoreError;
   }
 
   /** 每个宿主会话一个独立的 Pi 会话目录（--session-dir），互不干扰、可按会话定位。 */
@@ -1001,9 +1204,18 @@ export class AgentHost extends EventEmitter {
 
   /** 关闭全部活动会话与子进程。 */
   async close(): Promise<void> {
-    const handles = [...this.sessions.values()];
-    this.sessions.clear();
-    await Promise.all(handles.map((h) => h.close().catch(() => undefined)));
-    this.started = false;
+    try {
+      const handles = [...this.sessions.values()];
+      this.sessions.clear();
+      await Promise.all(handles.map((h) => h.close().catch(() => undefined)));
+    } finally {
+      // 宽容代理的还原/关闭放在会话关闭之后，且即使会话关闭抛错也要执行；
+      // 还原失败按 teardownLenientProxies 的口径向上抛（保留 sidecar 自愈）。
+      try {
+        await this.teardownLenientProxies();
+      } finally {
+        this.started = false;
+      }
+    }
   }
 }

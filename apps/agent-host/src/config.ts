@@ -28,6 +28,12 @@ export interface HostConfig {
   extraPiArgs?: string[];
   /** 追加给 Pi 子进程的环境变量（遥测三重关闭变量不可被覆盖，见 pi-process）。 */
   env?: Record<string, string>;
+  /**
+   * 宽容工具调用代理解析开关。默认 false；开启后宿主在 start 时为
+   * models.json 中回环 openai-completions provider 启动代理并改写
+   * baseUrl，close 时还原。
+   */
+  lenientProxy?: boolean;
 }
 
 /** 校验并补齐默认值后的宿主配置。 */
@@ -42,6 +48,7 @@ export interface ResolvedHostConfig {
   offline: boolean;
   extraPiArgs: string[];
   env: Record<string, string>;
+  lenientProxy: boolean;
 }
 
 const HOST_CONFIG_KEYS = new Set([
@@ -55,6 +62,7 @@ const HOST_CONFIG_KEYS = new Set([
   "offline",
   "extraPiArgs",
   "env",
+  "lenientProxy",
 ]);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -120,6 +128,10 @@ export function resolveHostConfig(input: HostConfig, defaultPiCliPath: string): 
     throw new ConfigError("配置 offline 必须是布尔值", { value: input.offline });
   }
 
+  if (input.lenientProxy !== undefined && typeof input.lenientProxy !== "boolean") {
+    throw new ConfigError("配置 lenientProxy 必须是布尔值", { value: input.lenientProxy });
+  }
+
   return {
     dataDir,
     piAgentDir: optionalString(input.piAgentDir, "piAgentDir") ?? `${dataDir}/pi-agent`,
@@ -131,6 +143,7 @@ export function resolveHostConfig(input: HostConfig, defaultPiCliPath: string): 
     offline: input.offline ?? false,
     extraPiArgs,
     env,
+    lenientProxy: input.lenientProxy ?? false,
   };
 }
 

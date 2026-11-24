@@ -6,6 +6,7 @@
  * 三次尝试均卡在工具调用格式、未通过；用户 2026-11-24 改拍 3B 重跑本验收，
  * 故默认模型切至 3B（见 docs/test-runs/2026-11-24-local-model-3b.md）。
  * 未设 BAIMO_LOCAL_MODEL=1 时整套跳过——默认回归不依赖模型下载状态。
+ * 第九块起经宿主宽容代理（lenientProxy）接入，断言规格未变。
  *
  * 验收链路（全程 harness 真实链路，无桩、无人工代答）：
  * 1) 计划模式（required）下发建文件任务：模型必须先 submit_plan，
@@ -124,7 +125,7 @@ async function openLocalSession(t, dataDir, workDir) {
     JSON.stringify({ mode: "build", grants: [] }),
     "utf8",
   );
-  const host = new AgentHost({ dataDir, env: { HOME: workDir } });
+  const host = new AgentHost({ dataDir, env: { HOME: workDir }, lenientProxy: true });
   await host.start();
   const session = await host.openSession({
     title: "本地真模型验收",
