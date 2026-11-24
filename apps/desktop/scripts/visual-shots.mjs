@@ -36,10 +36,10 @@ if (phase !== "before" && phase !== "after") {
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = join(here, "..");
 const repoRoot = join(here, "..", "..", "..");
-const assetsDir = join(
-  repoRoot,
-  "docs/test-runs/assets/2026-11-24-visual-polish",
-);
+// 输出子目录可经 VISUAL_ASSETS_SUBDIR 覆盖（第十块 r2 对照用），默认第八块目录不变。
+const assetsSubdir =
+  process.env.VISUAL_ASSETS_SUBDIR ?? "2026-11-24-visual-polish";
+const assetsDir = join(repoRoot, "docs/test-runs/assets", assetsSubdir);
 mkdirSync(assetsDir, { recursive: true });
 
 const EXAMPLE_PLUGIN = join(
