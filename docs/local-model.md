@@ -1,8 +1,10 @@
 # 本地真模型接入（第七块）
 
 白墨 Harness 除桩模型外，可接一个**只在本机回环地址推理**的真实开源
-模型做实跑：运行时 Ollama、模型 Qwen2.5-Coder 0.5B（用户拍板的 0.5B 尺寸，Q4 量化）。
-全程不需要任何 API key，请求不离开本机。
+模型做实跑：运行时 Ollama；首轮接入 Qwen2.5-Coder 0.5B（用户拍板的
+0.5B 尺寸，Q4 量化），补验换 Qwen2.5-Coder 3B（Q4 量化）——验收测试
+的默认模型已切至 3B，两模型均已拉取到本机。全程不需要任何 API key，
+请求不离开本机。
 
 ## 运行时（用户态安装）
 
@@ -15,8 +17,9 @@ mkdir -p ~/.local/ollama && tar --zstd -xf ollama.tar.zst -C ~/.local/ollama
 # 只监听回环，后台启动
 OLLAMA_HOST=127.0.0.1:11434 ~/.local/ollama/bin/ollama serve
 
-# 拉模型（约 0.4GB）
+# 拉模型（0.5B 约 0.4GB；3B 约 1.9GB）
 ~/.local/ollama/bin/ollama pull qwen2.5-coder:0.5b
+~/.local/ollama/bin/ollama pull qwen2.5-coder:3b
 ```
 
 验收实测数据（VM 1.5 核 / 6GB 档）见
@@ -58,3 +61,8 @@ npm run test:local-model
 覆盖：计划批准 → 建文件 → 改一行 → 检查点回滚 → 账本核对，
 证据写 `tests/local-model/last-run-evidence.json`。
 未设 `BAIMO_LOCAL_MODEL=1` 时整套跳过，默认回归不依赖模型是否已下载。
+默认模型为 `qwen2.5-coder:3b`（`BAIMO_LOCAL_MODEL_ID` 可覆盖）。
+实跑结论如实：0.5B 首轮与 3B 补验均未通过——两模型都把 submit_plan
+写成 JSON 纯文本、从未发出可解析的 tool_call，全链路卡在第一步；
+见 `docs/test-runs/2026-11-24-local-model.md` 与
+`docs/test-runs/2026-11-24-local-model-3b.md`。
