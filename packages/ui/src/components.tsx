@@ -1463,7 +1463,7 @@ export function ContextRing(props: { stats: SessionStatsDto | null }) {
   const filled = percent === null ? 0 : Math.min(100, Math.max(0, percent));
   return (
     <div className="ring-wrap" data-testid="context-ring" data-state={props.stats ? "live" : "unavailable"}>
-      <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden>
+      <svg width="30" height="30" viewBox="0 0 40 40" aria-hidden>
         <circle cx="20" cy="20" r={r} className="ring-bg" />
         <circle
           cx="20"
@@ -1476,15 +1476,15 @@ export function ContextRing(props: { stats: SessionStatsDto | null }) {
       </svg>
       <div className="ring-text">
         {percent === null ? (
-          <span>上下文：未接入</span>
+          <span className="ring-main">上下文未接入</span>
         ) : (
-          <span>
-            {percent.toFixed(2)}% · {cu?.tokens ?? "?"} / {cu?.contextWindow} tokens
+          <span className="ring-main">
+            上下文 {percent.toFixed(2)}% · {cu?.tokens ?? "?"} / {cu?.contextWindow}
           </span>
         )}
         <span className="dim" data-testid="stats-line">
           {props.stats
-            ? `本会话 tokens 合计 ${props.stats.tokens.total} · 费用 ${props.stats.cost.toFixed(4)}（口径：Pi get_session_stats）`
+            ? `本会话 ${props.stats.tokens.total} tokens · 费用 ${props.stats.cost.toFixed(4)}`
             : "用量未接入（会话未运行或已断开）"}
         </span>
       </div>
@@ -1566,7 +1566,7 @@ export function Composer(props: {
   return (
     <div className="composer" data-testid="composer">
       <QueueStrip queue={props.queue} onWithdraw={props.onWithdraw} />
-      <div className="composer-row">
+      <div className="composer-card">
         <textarea
           data-testid="composer-input"
           value={text}
@@ -1586,7 +1586,7 @@ export function Composer(props: {
           }}
           rows={3}
         />
-        <div className="composer-side">
+        <div className="composer-bar">
           <ContextRing stats={props.stats} />
           <div className="composer-actions">
             {props.running && (

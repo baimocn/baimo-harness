@@ -349,15 +349,22 @@ input:focus, textarea:focus, select:focus { border-color: var(--border-strong); 
 .change-row { display: flex; justify-content: space-between; gap: var(--sp-2); padding: 6px 10px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: var(--fs-12); }
 .change-row:hover { background: var(--surface); }
 
-/* 输入区 */
-.composer { display: flex; flex-direction: column; gap: var(--sp-2); padding: 10px var(--sp-3); border-top: 1px solid var(--border); background: var(--panel); }
-.composer-row { display: flex; gap: 10px; }
-.composer textarea {
-  flex: 1; background: var(--code-bg); color: var(--text); border: 1px solid var(--border);
-  border-radius: var(--r-md); padding: var(--sp-2); resize: none; font-family: inherit; font-size: var(--fs-13);
+/* 输入区（第十块）：浮起卡片——全界面视觉锚点。外层落基底无边框，
+ * 卡用最亮工作面 + 专属边框 + 柔和扩散阴影；操作行与用量微排版集成在卡内下沿。 */
+.composer { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4) var(--sp-4); }
+.composer-card {
+  background: var(--composer); border: 1px solid var(--popover-border); border-radius: var(--r-xl);
+  box-shadow: var(--shadow-composer); padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  transition: border-color var(--ease);
 }
-.composer textarea:focus { border-color: var(--border-strong); }
-.composer-side { display: flex; flex-direction: column; justify-content: space-between; gap: var(--sp-2); }
+.composer-card:focus-within { border-color: var(--border-strong); }
+.composer textarea {
+  background: transparent; color: var(--text); border: none; padding: 2px;
+  resize: none; font-family: inherit; font-size: var(--fs-13); line-height: 1.55; min-height: 58px;
+}
+.composer textarea:focus-visible { outline: none; }
+.composer-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-3); }
 .composer-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .queue-strip { display: flex; flex-direction: column; gap: var(--sp-1); }
 .queue-entry { display: flex; gap: var(--sp-2); align-items: center; background: var(--surface); border: 1px solid var(--card-border); border-radius: var(--r-md); padding: var(--sp-1) var(--sp-2); font-size: var(--fs-12); }
@@ -406,7 +413,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--border-strong); 
 .ring-wrap { display: flex; gap: var(--sp-2); align-items: center; }
 .ring-bg { fill: none; stroke: var(--border); stroke-width: 4; }
 .ring-fg { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray 300ms ease; }
-.ring-text { display: flex; flex-direction: column; font-size: var(--fs-11); max-width: 300px; font-variant-numeric: tabular-nums; }
+.ring-text { display: flex; flex-direction: column; gap: 1px; font-size: var(--fs-11); max-width: 320px; font-variant-numeric: tabular-nums; }
+.ring-main { color: var(--dim); }
 
 /* 状态栏 */
 .statusbar {
