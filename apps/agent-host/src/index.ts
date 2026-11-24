@@ -8,3 +8,5 @@ export * from "./idle-queue-store.js";
 export * from "./idle-queue.js";
 export * from "./plugin-service.js";
 export * from "./agent-host.js";
+export * from "./lenient-parser.js";
+export * from "./lenient-proxy.js";
